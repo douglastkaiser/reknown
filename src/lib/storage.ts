@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS: Settings = {
     headline: 2,
     company: 2,
   },
+  installPromptDismissedAt: null,
   updatedAt: Date.now(),
 };
 
@@ -84,7 +85,16 @@ export async function deletePerson(personId: string): Promise<void> {
 export async function getSettings(): Promise<Settings> {
   const db = await dbPromise;
   const existing = await db.get('settings', 'app');
-  if (existing) return existing;
+  if (existing) {
+    const merged = { ...DEFAULT_SETTINGS, ...existing, id: 'app' as const };
+    if (merged.installPromptDismissedAt !== existing.installPromptDismissedAt) {
+      const now = Date.now();
+      const next = { ...merged, updatedAt: now };
+      await db.put('settings', next);
+      return next;
+    }
+    return merged;
+  }
   await db.put('settings', DEFAULT_SETTINGS);
   return DEFAULT_SETTINGS;
 }

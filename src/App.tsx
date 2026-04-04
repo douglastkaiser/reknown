@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { HomeDashboard } from './components/home/HomeDashboard';
@@ -11,16 +11,15 @@ import { ImportPreview } from './components/import/ImportPreview';
 import { usePeople } from './hooks/usePeople';
 import { useStats } from './hooks/useStats';
 import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
-import { getSettings, seedPeople } from './lib/storage';
+import { getSettings, seedPeople, updateSettings } from './lib/storage';
 import type { CsvPersonRow, Settings } from './types';
-import { useEffect } from 'react';
 
 function useAppSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
   useEffect(() => {
     void getSettings().then(setSettings);
   }, []);
-  return settings;
+  return { settings, setSettings };
 }
 
 function ImportPage({ onImport }: { onImport: (rows: CsvPersonRow[]) => Promise<void> }) {
@@ -43,7 +42,15 @@ function ImportPage({ onImport }: { onImport: (rows: CsvPersonRow[]) => Promise<
 export default function App() {
   const peopleState = usePeople();
   const statsState = useStats();
-  const settings = useAppSettings();
+  const { settings, setSettings } = useAppSettings();
+
+  const dismissInstallPrompt = useMemo(
+    () => async () => {
+      const next = await updateSettings({ installPromptDismissedAt: Date.now() });
+      setSettings(next);
+    },
+    [setSettings]
+  );
 
   const imported = useMemo(
     () => async (rows: CsvPersonRow[]) => {
@@ -56,7 +63,16 @@ export default function App() {
   return (
     <AppShell>
       <Routes>
-        <Route path="/home" element={<HomeDashboard stats={statsState.stats} />} />
+        <Route
+          path="/home"
+          element={
+            <HomeDashboard
+              stats={statsState.stats}
+              installPromptDismissed={Boolean(settings?.installPromptDismissedAt)}
+              onDismissInstallPrompt={dismissInstallPrompt}
+            />
+          }
+        />
         <Route
           path="/people"
           element={
