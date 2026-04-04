@@ -58,6 +58,7 @@ export interface Settings {
   queueCap: number;
   maturityThreshold: number;
   cardTypeWeights: Record<CardType, number>;
+  installPromptDismissedAt: number | null;
   updatedAt: number;
 }
 
