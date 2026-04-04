@@ -1,72 +1,75 @@
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import { AppShell } from './components/layout/AppShell';
+import { HomeDashboard } from './components/home/HomeDashboard';
+import { PeopleForm } from './components/people/PeopleForm';
+import { PeopleList } from './components/people/PeopleList';
+import { ReviewSessionFlow } from './components/review/ReviewSessionFlow';
+import { CsvPaste } from './components/import/CsvPaste';
+import { CsvUpload } from './components/import/CsvUpload';
+import { ImportPreview } from './components/import/ImportPreview';
+import { usePeople } from './hooks/usePeople';
+import { useStats } from './hooks/useStats';
+import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
+import { getSettings, seedPeople } from './lib/storage';
+import type { CsvPersonRow, Settings } from './types';
+import { useEffect } from 'react';
 
-const tabs = [
-  { label: 'Home', path: '/home' },
-  { label: 'Discover', path: '/discover' },
-  { label: 'Profile', path: '/profile' }
-];
+function useAppSettings() {
+  const [settings, setSettings] = useState<Settings | null>(null);
+  useEffect(() => {
+    void getSettings().then(setSettings);
+  }, []);
+  return settings;
+}
 
-function Placeholder({ title, description }: { title: string; description: string }) {
+function ImportPage({ onImport }: { onImport: (rows: CsvPersonRow[]) => Promise<void> }) {
+  const [rows, setRows] = useState<CsvPersonRow[]>([]);
+
+  const onText = (text: string) => {
+    const normalized = parseLinkedInCsv(text);
+    setRows(normalized.length ? normalized : parseGenericCsv(text));
+  };
+
   return (
-    <section className="card mt-4">
-      <h2 className="text-lg font-semibold">{title}</h2>
-      <p className="mt-2 text-sm text-muted">{description}</p>
-    </section>
+    <div className="space-y-3">
+      <CsvUpload onText={onText} />
+      <CsvPaste onText={onText} />
+      {rows.length ? <ImportPreview rows={rows} onConfirm={() => void onImport(rows)} /> : null}
+    </div>
   );
 }
 
 export default function App() {
+  const peopleState = usePeople();
+  const statsState = useStats();
+  const settings = useAppSettings();
+
+  const imported = useMemo(
+    () => async (rows: CsvPersonRow[]) => {
+      await seedPeople(rows.map((row) => ({ ...row, tags: [] })));
+      await peopleState.refresh();
+    },
+    [peopleState]
+  );
+
   return (
-    <div className="app-shell">
-      <header className="sticky top-0 z-10 -mx-4 border-b border-border bg-bg/90 px-4 py-3 backdrop-blur">
-        <h1 className="text-xl font-semibold tracking-tight">Reknown</h1>
-        <p className="mt-1 text-sm text-muted">Mobile-first platform shell</p>
-      </header>
-
-      <nav className="mt-4 grid grid-cols-3 gap-2 rounded-2xl border border-border bg-surface/70 p-2">
-        {tabs.map((tab) => (
-          <NavLink
-            key={tab.path}
-            to={tab.path}
-            className={({ isActive }) => `nav-link text-center ${isActive ? 'nav-link-active' : ''}`}
-          >
-            {tab.label}
-          </NavLink>
-        ))}
-      </nav>
-
-      <main className="flex-1">
-        <Routes>
-          <Route
-            path="/home"
-            element={
-              <Placeholder
-                title="Welcome"
-                description="Use this shell as your integration point for upcoming product modules."
-              />
-            }
-          />
-          <Route
-            path="/discover"
-            element={
-              <Placeholder
-                title="Discover"
-                description="Plug in feed, search, and recommendation modules here."
-              />
-            }
-          />
-          <Route
-            path="/profile"
-            element={
-              <Placeholder
-                title="Profile"
-                description="Attach account and settings experiences in this route scope."
-              />
-            }
-          />
-          <Route path="*" element={<Navigate to="/home" replace />} />
-        </Routes>
-      </main>
-    </div>
+    <AppShell>
+      <Routes>
+        <Route path="/home" element={<HomeDashboard stats={statsState.stats} />} />
+        <Route
+          path="/people"
+          element={
+            <div className="space-y-3">
+              <PeopleForm onSave={peopleState.addPerson} />
+              <PeopleList people={peopleState.people} onDelete={(id) => void peopleState.removePerson(id)} />
+            </div>
+          }
+        />
+        <Route path="/review" element={<ReviewSessionFlow people={peopleState.people} settings={settings} />} />
+        <Route path="/import" element={<ImportPage onImport={imported} />} />
+        <Route path="*" element={<Navigate to="/home" replace />} />
+      </Routes>
+    </AppShell>
   );
 }

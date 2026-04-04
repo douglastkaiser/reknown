@@ -1,6 +1,15 @@
+export type CardType = 'name_to_face' | 'face_to_name' | 'headline' | 'company';
+
 export interface Person {
   id: string;
   name: string;
+  headline?: string;
+  company?: string;
+  notes?: string;
+  photoDataUrl?: string;
+  photoUrl?: string;
+  linkedinUrl?: string;
+  tags?: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -16,6 +25,7 @@ export interface SRSData {
 export interface ReviewCard {
   id: string;
   personId: Person['id'];
+  type: CardType;
   prompt: string;
   answer: string;
   srs: SRSData;
@@ -32,9 +42,36 @@ export interface SessionStats {
 }
 
 export interface AppStats {
+  id: 'app';
   totalCards: number;
   dueCards: number;
   matureCards: number;
   averageEaseFactor: number;
   totalReviews: number;
+  updatedAt: number;
+}
+
+export interface Settings {
+  id: 'app';
+  deckSize: number;
+  newCardsWhenQueueSmall: number;
+  queueCap: number;
+  maturityThreshold: number;
+  cardTypeWeights: Record<CardType, number>;
+  updatedAt: number;
+}
+
+export interface ReviewGrade {
+  cardId: string;
+  quality: number;
+  reviewedAt: number;
+}
+
+export interface CsvPersonRow {
+  name: string;
+  headline?: string;
+  company?: string;
+  linkedinUrl?: string;
+  photoUrl?: string;
+  notes?: string;
 }
