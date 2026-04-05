@@ -91,7 +91,7 @@ Dashboard metrics:
 
 This repository supports two publishing modes:
 
-- **Deploy from branch (`main`)** using the committed `docs/` output.
+- **Deploy from branch (`main` + `/docs` folder)** using the committed `docs/` output.
 - **GitHub Actions deployment** using `.github/workflows/deploy.yml`.
 
 Release flow:
@@ -115,9 +115,9 @@ If the page loads with favicon/title but shows only a white screen, inspect page
 
 Fix for "Deploy from branch (main)":
 
-1. Build and commit the Pages output: `npm run build:pages` (writes production assets to `docs/` with base `/reknown/docs/`).
-2. In **Settings → Pages**, keep **Source = Deploy from a branch**, choose branch `main`, folder `/root`.
-3. Root `index.html` redirects GitHub Pages traffic to `./docs/` so the built app loads instead of the Vite source entrypoint.
+1. Build and commit the Pages output: `npm run build:pages` (writes production assets to `docs/` with base `/reknown/`).
+2. In **Settings → Pages**, set **Source = Deploy from a branch**, choose branch `main`, folder `/docs`.
+3. Visit `https://<user>.github.io/reknown/` (no `/docs/` suffix).
 4. Hard refresh (or unregister old service worker) after deploy if a stale cache is suspected.
 
 ## Stack
