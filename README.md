@@ -72,6 +72,17 @@ Dashboard metrics:
 4. Reknown attempts LinkedIn-specific parsing first, then falls back to generic CSV parsing.
 5. Confirm the preview to seed people into your review pool.
 
+
+## GitHub Pages publishing
+
+This repository uses **GitHub Actions-based Pages deployment** from `main`.
+
+Release flow:
+
+1. Push changes to `main`.
+2. GitHub Actions runs install + build and deploys the `dist/` artifact to Pages via `.github/workflows/deploy.yml`.
+3. Do **not** commit generated `docs/` output for publishing.
+
 ## Stack
 
 - React 18 + TypeScript
@@ -83,9 +94,7 @@ Dashboard metrics:
 
 ## Screenshot / GIF placeholders
 
-- Add an app screenshot at `docs/images/dashboard.png`
-- Add a review-flow GIF at `docs/images/review-flow.gif`
-- Update this section with embedded media when assets are available.
+- Add an app screenshot and review-flow GIF to this section when assets are available.
 
 ## License
 
