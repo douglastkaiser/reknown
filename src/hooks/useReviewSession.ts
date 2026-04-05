@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Person, ReviewCard, Settings } from '../types';
 import { buildReviewQueue, generateCardsForPeople } from '../lib/card-generator';
+import { selectDistractors } from '../lib/face-distractors';
 import { makeReviewCard } from '../lib/storage';
 import { reviewSRS } from '../lib/srs';
 
@@ -29,15 +30,6 @@ function evaluateGuess(answer: string, guess: string): GuessEvaluation {
   return { quality: 1, matched: false, feedback: `Not quite. Correct answer: ${answer}` };
 }
 
-function shuffle<T>(values: T[]): T[] {
-  const copy = [...values];
-  for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
-}
-
 function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settings): ReviewCard[] {
   const optionCount = settings.hardModeEnabled ? settings.facerHardOptionCount : settings.facerOptionCount;
   if (optionCount < 2) return cards;
@@ -45,13 +37,16 @@ function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settin
   return cards.map((card) => {
     if (card.type !== 'face_to_name') return card;
 
-    const distractors = shuffle(
-      people
-        .filter((person) => person.id !== card.personId)
-        .map((person) => person.name)
-    ).slice(0, Math.max(0, optionCount - 1));
-
-    const options = shuffle([card.answer, ...distractors]);
+    const distractorPeople = selectDistractors(
+      card.personId,
+      people,
+      Math.max(0, optionCount - 1),
+      'similar-first'
+    );
+    const distractorNames = distractorPeople.map((person) => person.name);
+    const options = [card.answer, ...distractorNames]
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .sort(() => Math.random() - 0.5);
     const correctOptionIndex = options.findIndex((value) => value === card.answer);
     return { ...card, options, correctOptionIndex };
   });

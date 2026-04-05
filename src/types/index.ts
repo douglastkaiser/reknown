@@ -3,6 +3,11 @@ export type CardType = 'name_to_face' | 'face_to_name' | 'headline' | 'company';
 export interface Person {
   id: string;
   name: string;
+  similarity?: {
+    normalizedDescriptors?: string[];
+    clusterIds?: string[];
+    nearestNeighborIds?: string[];
+  };
   headline?: string;
   company?: string;
   notes?: string;
