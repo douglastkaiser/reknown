@@ -1,14 +1,15 @@
 import { useMemo, useState } from 'react';
-import type { Person, ReviewCard, Settings } from '../types';
+import type { Person, ReviewCard, ReviewMode, Settings } from '../types';
 import { buildReviewQueue, generateCardsForPeople } from '../lib/card-generator';
 import { selectDistractors } from '../lib/face-distractors';
-import { makeReviewCard } from '../lib/storage';
+import { makeReviewCard, recordReviewEvent, recordSessionSummary } from '../lib/storage';
 import { reviewSRS } from '../lib/srs';
 
 export interface GuessEvaluation {
   quality: number;
   matched: boolean;
   feedback: string;
+  mode: ReviewMode;
 }
 
 function normalize(value: string) {
@@ -20,14 +21,14 @@ function evaluateGuess(answer: string, guess: string): GuessEvaluation {
   const normalizedGuess = normalize(guess);
 
   if (normalizedGuess === normalizedAnswer) {
-    return { quality: 5, matched: true, feedback: 'Correct — great recall.' };
+    return { quality: 5, matched: true, feedback: 'Correct — great recall.', mode: 'typed_guess' };
   }
 
   if (normalizedGuess && (normalizedAnswer.includes(normalizedGuess) || normalizedGuess.includes(normalizedAnswer))) {
-    return { quality: 3, matched: false, feedback: `Close. Correct answer: ${answer}` };
+    return { quality: 3, matched: false, feedback: `Close. Correct answer: ${answer}`, mode: 'typed_guess' };
   }
 
-  return { quality: 1, matched: false, feedback: `Not quite. Correct answer: ${answer}` };
+  return { quality: 1, matched: false, feedback: `Not quite. Correct answer: ${answer}`, mode: 'typed_guess' };
 }
 
 function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settings): ReviewCard[] {
@@ -57,6 +58,9 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
   const [index, setIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [guessEvaluation, setGuessEvaluation] = useState<GuessEvaluation | null>(null);
+  const [correctInSession, setCorrectInSession] = useState(0);
+  const [incorrectInSession, setIncorrectInSession] = useState(0);
+  const [sessionSummarySaved, setSessionSummarySaved] = useState(false);
 
   const queue = useMemo(() => {
     if (!settings) return [];
@@ -79,6 +83,9 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
     setIndex(0);
     setRevealed(false);
     setGuessEvaluation(null);
+    setCorrectInSession(0);
+    setIncorrectInSession(0);
+    setSessionSummarySaved(false);
   }
 
   function reveal() {
@@ -89,18 +96,50 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
     setRevealed((value) => !value);
   }
 
-  function advanceWithQuality(quality: number) {
+  function advanceWithQuality(quality: number, mode: ReviewMode, outcome: 'accepted' | 'rejected') {
     if (!current) return;
+    const timestamp = Date.now();
+
     setPool((existing) =>
-      existing.map((card) => card.id === current.id ? { ...card, srs: reviewSRS(card.srs, quality), updatedAt: Date.now() } : card)
+      existing.map((card) => card.id === current.id ? { ...card, srs: reviewSRS(card.srs, quality), updatedAt: timestamp } : card)
     );
+
+    void recordReviewEvent({
+      cardId: current.id,
+      cardType: current.type,
+      outcome,
+      score: quality,
+      timestamp,
+      mode,
+    });
+
+    const nextCorrect = correctInSession + (outcome === 'accepted' ? 1 : 0);
+    const nextIncorrect = incorrectInSession + (outcome === 'rejected' ? 1 : 0);
+    if (outcome === 'accepted') {
+      setCorrectInSession(nextCorrect);
+    } else {
+      setIncorrectInSession(nextIncorrect);
+    }
+
+    const nextReviewed = index + 1;
+    if (!sessionSummarySaved && nextReviewed >= queue.length) {
+      const total = nextCorrect + nextIncorrect;
+      void recordSessionSummary({
+        correct: nextCorrect,
+        incorrect: nextIncorrect,
+        accuracy: total ? (nextCorrect / total) * 100 : 0,
+        timestamp,
+      });
+      setSessionSummarySaved(true);
+    }
+
     setIndex((value) => value + 1);
     setRevealed(false);
     setGuessEvaluation(null);
   }
 
   function grade(quality: number) {
-    advanceWithQuality(quality);
+    advanceWithQuality(quality, 'manual_grade', quality >= 3 ? 'accepted' : 'rejected');
   }
 
   function submitGuess(guess: string): GuessEvaluation | null {
@@ -112,14 +151,14 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
 
   function continueAfterGuess() {
     if (!guessEvaluation) return;
-    advanceWithQuality(guessEvaluation.quality);
+    advanceWithQuality(guessEvaluation.quality, guessEvaluation.mode, guessEvaluation.matched ? 'accepted' : 'rejected');
   }
 
   function submitChoice(optionIndex: number): GuessEvaluation | null {
     if (!current || current.type !== 'face_to_name') return null;
     const matched = optionIndex === current.correctOptionIndex;
     const feedback = matched ? 'Correct — great recall.' : `Not quite. Correct answer: ${current.answer}`;
-    const evaluated = { quality: matched ? 5 : 1, matched, feedback };
+    const evaluated = { quality: matched ? 5 : 1, matched, feedback, mode: 'multiple_choice' as const };
     setGuessEvaluation(evaluated);
     return evaluated;
   }

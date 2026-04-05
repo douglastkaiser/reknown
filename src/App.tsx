@@ -68,6 +68,7 @@ export default function App() {
           element={
             <HomeDashboard
               stats={statsState.stats}
+              reviewMetrics={statsState.reviewMetrics}
               installPromptDismissed={Boolean(settings?.installPromptDismissedAt)}
               onDismissInstallPrompt={dismissInstallPrompt}
             />

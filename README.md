@@ -27,6 +27,43 @@ Card types supported:
 
 Card-type weights in settings control how frequently each type appears.
 
+## Objective metrics definitions
+
+Reknown stores objective review telemetry in IndexedDB and computes dashboard metrics from those records:
+
+- `reviewEvents` store (one row per reviewed card):
+  - `cardId`
+  - `cardType`
+  - `outcome` (`accepted` or `rejected`)
+  - `score` (SM-2 quality `0..5`)
+  - `timestamp` (Unix epoch milliseconds)
+  - `mode` (`manual_grade`, `typed_guess`, or `multiple_choice`)
+- `sessionSummaries` store (one row per completed session):
+  - `correct`
+  - `incorrect`
+  - `accuracy` (`correct / (correct + incorrect) * 100`)
+  - `timestamp`
+
+Deterministic scoring and outcomes:
+
+- Manual grading (`manual_grade`): `accepted` when quality is `>= 3`, otherwise `rejected`.
+- Typed face-to-name (`typed_guess`):
+  - exact match ⇒ quality `5`, `accepted`
+  - partial/close string overlap ⇒ quality `3`, `rejected`
+  - mismatch ⇒ quality `1`, `rejected`
+- Face multiple-choice (`multiple_choice`): correct option ⇒ quality `5`, `accepted`; wrong option ⇒ quality `1`, `rejected`.
+
+Dashboard metrics:
+
+- **Got it %** = overall accepted rate across all `reviewEvents`.
+- **Needs work %** = `100 - Got it %`.
+- Per-mode/type slices:
+  - **Face→Name accuracy** = accepted rate where `cardType = face_to_name`.
+  - **Face MC accuracy** = accepted rate where `cardType = face_to_name` and `mode = multiple_choice`.
+- Trend windows:
+  - **Trend (7d)** = accepted rate for events with `timestamp >= now - 7 days`.
+  - **Trend (30d)** = accepted rate for events with `timestamp >= now - 30 days`.
+
 ## LinkedIn CSV import instructions
 
 1. Export your connections from LinkedIn as CSV.

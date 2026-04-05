@@ -58,6 +58,41 @@ export interface AppStats {
   updatedAt: number;
 }
 
+export type ReviewOutcome = 'accepted' | 'rejected';
+export type ReviewMode = 'manual_grade' | 'typed_guess' | 'multiple_choice';
+
+export interface ReviewEvent {
+  id: number;
+  cardId: string;
+  cardType: CardType;
+  outcome: ReviewOutcome;
+  score: number;
+  timestamp: number;
+  mode: ReviewMode;
+}
+
+export interface SessionSummary {
+  id: string;
+  correct: number;
+  incorrect: number;
+  accuracy: number;
+  timestamp: number;
+}
+
+export interface AccuracyMetric {
+  total: number;
+  accepted: number;
+  accuracy: number;
+}
+
+export interface ReviewMetrics {
+  overall: AccuracyMetric;
+  faceToName: AccuracyMetric;
+  facerMultipleChoice: AccuracyMetric;
+  trend7d: AccuracyMetric;
+  trend30d: AccuracyMetric;
+}
+
 export interface Settings {
   id: 'app';
   deckSize: number;

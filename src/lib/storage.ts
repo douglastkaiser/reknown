@@ -1,8 +1,17 @@
 import { openDB, type DBSchema } from 'idb';
-import type { AppStats, Person, ReviewCard, Settings } from '../types';
+import type {
+  AccuracyMetric,
+  AppStats,
+  Person,
+  ReviewCard,
+  ReviewEvent,
+  ReviewMetrics,
+  SessionSummary,
+  Settings,
+} from '../types';
 
 const DB_NAME = 'reknown-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const DEFAULT_SETTINGS: Settings = {
   id: 'app',
   deckSize: 20,
@@ -36,16 +45,38 @@ interface ReknownDB extends DBSchema {
     key: string;
     value: Settings;
   };
+  reviewEvents: {
+    key: number;
+    value: ReviewEvent;
+    indexes: { 'by-timestamp': number; 'by-cardType': string; 'by-mode': string };
+  };
+  sessionSummaries: {
+    key: string;
+    value: SessionSummary;
+    indexes: { 'by-timestamp': number };
+  };
 }
 
 const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
-  upgrade(db) {
-    const people = db.createObjectStore('people', { keyPath: 'id' });
-    people.createIndex('by-updatedAt', 'updatedAt');
-    people.createIndex('by-name', 'name');
+  upgrade(db, oldVersion) {
+    if (oldVersion < 1) {
+      const people = db.createObjectStore('people', { keyPath: 'id' });
+      people.createIndex('by-updatedAt', 'updatedAt');
+      people.createIndex('by-name', 'name');
 
-    db.createObjectStore('stats', { keyPath: 'id' });
-    db.createObjectStore('settings', { keyPath: 'id' });
+      db.createObjectStore('stats', { keyPath: 'id' });
+      db.createObjectStore('settings', { keyPath: 'id' });
+    }
+
+    if (oldVersion < 2) {
+      const events = db.createObjectStore('reviewEvents', { keyPath: 'id', autoIncrement: true });
+      events.createIndex('by-timestamp', 'timestamp');
+      events.createIndex('by-cardType', 'cardType');
+      events.createIndex('by-mode', 'mode');
+
+      const summaries = db.createObjectStore('sessionSummaries', { keyPath: 'id' });
+      summaries.createIndex('by-timestamp', 'timestamp');
+    }
   },
 });
 
@@ -146,16 +177,20 @@ export async function updateStats(updates: Partial<Omit<AppStats, 'id' | 'update
 
 export async function exportJson(): Promise<string> {
   const db = await dbPromise;
-  const [people, stats, settings] = await Promise.all([
+  const [people, stats, settings, reviewEvents, sessionSummaries] = await Promise.all([
     db.getAll('people'),
     db.get('stats', 'app'),
     db.get('settings', 'app'),
+    db.getAllFromIndex('reviewEvents', 'by-timestamp'),
+    db.getAllFromIndex('sessionSummaries', 'by-timestamp'),
   ]);
   return JSON.stringify({
     exportedAt: new Date().toISOString(),
     people,
     stats,
     settings,
+    reviewEvents,
+    sessionSummaries,
   }, null, 2);
 }
 
@@ -190,5 +225,53 @@ export function makeReviewCard(person: Person, type: ReviewCard['type']): Review
     srs: { interval: 0, repetitions: 0, easeFactor: 2.5, dueAt: now, lastReviewedAt: null },
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function emitMetricsUpdatedEvent() {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('reknown:metrics-updated'));
+  }
+}
+
+function summarizeAccuracy(events: Pick<ReviewEvent, 'outcome'>[]): AccuracyMetric {
+  const total = events.length;
+  const accepted = events.filter((event) => event.outcome === 'accepted').length;
+  const accuracy = total ? (accepted / total) * 100 : 0;
+  return { total, accepted, accuracy };
+}
+
+export async function recordReviewEvent(
+  event: Omit<ReviewEvent, 'id'>
+): Promise<void> {
+  const db = await dbPromise;
+  await db.add('reviewEvents', event as ReviewEvent);
+  emitMetricsUpdatedEvent();
+}
+
+export async function recordSessionSummary(
+  summary: Omit<SessionSummary, 'id'>
+): Promise<SessionSummary> {
+  const db = await dbPromise;
+  const fullSummary: SessionSummary = { ...summary, id: id() };
+  await db.add('sessionSummaries', fullSummary);
+  emitMetricsUpdatedEvent();
+  return fullSummary;
+}
+
+export async function getReviewMetrics(now: number = Date.now()): Promise<ReviewMetrics> {
+  const db = await dbPromise;
+  const events = await db.getAllFromIndex('reviewEvents', 'by-timestamp');
+  const sevenDayCutoff = now - 7 * 24 * 60 * 60 * 1000;
+  const thirtyDayCutoff = now - 30 * 24 * 60 * 60 * 1000;
+
+  return {
+    overall: summarizeAccuracy(events),
+    faceToName: summarizeAccuracy(events.filter((event) => event.cardType === 'face_to_name')),
+    facerMultipleChoice: summarizeAccuracy(
+      events.filter((event) => event.cardType === 'face_to_name' && event.mode === 'multiple_choice')
+    ),
+    trend7d: summarizeAccuracy(events.filter((event) => event.timestamp >= sevenDayCutoff)),
+    trend30d: summarizeAccuracy(events.filter((event) => event.timestamp >= thirtyDayCutoff)),
   };
 }
