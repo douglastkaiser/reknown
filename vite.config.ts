@@ -1,7 +1,28 @@
 import { deflateSync } from 'node:zlib';
 import { defineConfig, type Plugin } from 'vitest/config';
+import { loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+
+function normalizeBasePath(basePath: string): string {
+  if (!basePath) {
+    return '/';
+  }
+
+  let normalized = basePath.trim();
+  if (!normalized.startsWith('/')) {
+    normalized = `/${normalized}`;
+  }
+  if (!normalized.endsWith('/')) {
+    normalized = `${normalized}/`;
+  }
+  return normalized;
+}
+
+function withBase(basePath: string, path: string): string {
+  const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+  return `${basePath}${cleanPath}`;
+}
 
 function makeCrcTable() {
   const table = new Uint32Array(256);
@@ -90,76 +111,82 @@ function emitPwaIcons(): Plugin {
   };
 }
 
-export default defineConfig({
-  plugins: [
-    react(),
-    emitPwaIcons(),
-    VitePWA({
-      registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg'],
-      manifest: {
-        id: '/',
-        name: 'Reknown',
-        short_name: 'Reknown',
-        description: 'Learn names and faces with spaced repetition from LinkedIn CSV imports.',
-        start_url: '/',
-        scope: '/',
-        display: 'standalone',
-        orientation: 'portrait',
-        background_color: '#020617',
-        theme_color: '#0f172a',
-        lang: 'en-US',
-        categories: ['education', 'productivity'],
-        icons: [
-          {
-            src: '/icon-192.png',
-            sizes: '192x192',
-            type: 'image/png',
-            purpose: 'any maskable',
-          },
-          {
-            src: '/icon-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any maskable',
-          },
-        ],
-      },
-      workbox: {
-        navigateFallback: '/index.html',
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}'],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'google-fonts-stylesheets',
-              expiration: {
-                maxEntries: 20,
-                maxAgeSeconds: 60 * 60 * 24 * 365,
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const basePath = normalizeBasePath(env.VITE_BASE_PATH ?? '/reknown/');
+
+  return {
+    base: basePath,
+    plugins: [
+      react(),
+      emitPwaIcons(),
+      VitePWA({
+        registerType: 'autoUpdate',
+        includeAssets: ['favicon.svg'],
+        manifest: {
+          id: basePath,
+          name: 'Reknown',
+          short_name: 'Reknown',
+          description: 'Learn names and faces with spaced repetition from LinkedIn CSV imports.',
+          start_url: basePath,
+          scope: basePath,
+          display: 'standalone',
+          orientation: 'portrait',
+          background_color: '#020617',
+          theme_color: '#0f172a',
+          lang: 'en-US',
+          categories: ['education', 'productivity'],
+          icons: [
+            {
+              src: withBase(basePath, 'icon-192.png'),
+              sizes: '192x192',
+              type: 'image/png',
+              purpose: 'any maskable',
+            },
+            {
+              src: withBase(basePath, 'icon-512.png'),
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'any maskable',
+            },
+          ],
+        },
+        workbox: {
+          navigateFallback: withBase(basePath, 'index.html'),
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}'],
+          runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+              handler: 'StaleWhileRevalidate',
+              options: {
+                cacheName: 'google-fonts-stylesheets',
+                expiration: {
+                  maxEntries: 20,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
               },
             },
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'google-fonts-webfonts',
-              expiration: {
-                maxEntries: 20,
-                maxAgeSeconds: 60 * 60 * 24 * 365,
-              },
-              cacheableResponse: {
-                statuses: [0, 200],
+            {
+              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+              handler: 'StaleWhileRevalidate',
+              options: {
+                cacheName: 'google-fonts-webfonts',
+                expiration: {
+                  maxEntries: 20,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
               },
             },
-          },
-        ],
-      },
-    }),
-  ],
-  test: {
-    environment: 'node',
-    globals: true,
-  },
+          ],
+        },
+      }),
+    ],
+    test: {
+      environment: 'node',
+      globals: true,
+    },
+  };
 });
