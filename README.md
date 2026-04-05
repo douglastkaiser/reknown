@@ -89,19 +89,36 @@ Dashboard metrics:
 
 ## GitHub Pages publishing
 
-This repository uses **GitHub Actions-based Pages deployment** from `main`.
+This repository supports two publishing modes:
+
+- **Deploy from branch (`main`)** using the committed `docs/` output.
+- **GitHub Actions deployment** using `.github/workflows/deploy.yml`.
 
 Release flow:
 
 1. Push changes to `main`.
-2. GitHub Actions runs install + build and deploys the `dist/` artifact to Pages via `.github/workflows/deploy.yml`.
-3. Do **not** commit generated `docs/` output for publishing.
+2. For branch deploys, run `npm run build:pages` and commit the generated `docs/` folder.
+3. For Actions deploys, GitHub Actions runs install + build and deploys the `dist/` artifact via `.github/workflows/deploy.yml`.
 
 Base path requirement for project Pages deployments:
 
 - Vite's `base` is configured from `VITE_BASE_PATH` and defaults to `/reknown/` for this repository.
 - For `https://<user>.github.io/<repo>/` deployments, set `VITE_BASE_PATH` to `/<repo>/` (for this repo: `/reknown/`).
 - `BrowserRouter` uses `import.meta.env.BASE_URL` as `basename`, so wildcard redirects (for unknown routes) continue routing to `/home` under the same base path.
+
+### Troubleshooting blank white page on GitHub Pages (branch deploy)
+
+If the page loads with favicon/title but shows only a white screen, inspect page source:
+
+- If you see `<script type="module" src="./src/main.tsx"></script>`, GitHub Pages is serving the repository source `index.html` directly instead of the built `dist` artifact.
+- That source HTML only works with the Vite dev server, so production browsers fail to boot the app bundle.
+
+Fix for "Deploy from branch (main)":
+
+1. Build and commit the Pages output: `npm run build:pages` (writes production assets to `docs/` with base `/reknown/docs/`).
+2. In **Settings → Pages**, keep **Source = Deploy from a branch**, choose branch `main`, folder `/root`.
+3. Root `index.html` redirects GitHub Pages traffic to `./docs/` so the built app loads instead of the Vite source entrypoint.
+4. Hard refresh (or unregister old service worker) after deploy if a stale cache is suspected.
 
 ## Stack
 
