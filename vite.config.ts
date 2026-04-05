@@ -113,10 +113,10 @@ function emitPwaIcons(): Plugin {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const basePath = normalizeBasePath(env.VITE_BASE_PATH ?? '/reknown/');
+  const base = normalizeBasePath(env.VITE_BASE_PATH ?? '/reknown/');
 
   return {
-    base: basePath,
+    base,
     plugins: [
       react(),
       emitPwaIcons(),
@@ -124,12 +124,12 @@ export default defineConfig(({ mode }) => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.svg'],
         manifest: {
-          id: basePath,
+          id: base,
           name: 'Reknown',
           short_name: 'Reknown',
           description: 'Learn names and faces with spaced repetition from LinkedIn CSV imports.',
-          start_url: basePath,
-          scope: basePath,
+          start_url: base,
+          scope: base,
           display: 'standalone',
           orientation: 'portrait',
           background_color: '#020617',
@@ -138,13 +138,13 @@ export default defineConfig(({ mode }) => {
           categories: ['education', 'productivity'],
           icons: [
             {
-              src: withBase(basePath, 'icon-192.png'),
+              src: withBase(base, 'icon-192.png'),
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any maskable',
             },
             {
-              src: withBase(basePath, 'icon-512.png'),
+              src: withBase(base, 'icon-512.png'),
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any maskable',
@@ -152,7 +152,7 @@ export default defineConfig(({ mode }) => {
           ],
         },
         workbox: {
-          navigateFallback: withBase(basePath, 'index.html'),
+          navigateFallback: withBase(base, 'index.html'),
           globPatterns: ['**/*.{js,css,html,ico,png,svg,webmanifest}'],
           runtimeCaching: [
             {
