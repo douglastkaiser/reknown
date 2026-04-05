@@ -1,14 +1,24 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Person } from '../types';
-import { createPerson, deletePerson, listPeople, updatePerson } from '../lib/storage';
+import { createPerson, deletePerson, listPeople, seedPeople, updatePerson } from '../lib/storage';
 
 export function usePeople() {
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
+  const seededOnStartupRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    setPeople(await listPeople());
+
+    let nextPeople = await listPeople();
+    if (!seededOnStartupRef.current && nextPeople.length === 0) {
+      const { starterPeople } = await import('../lib/starter-people');
+      await seedPeople(starterPeople.map((row) => ({ ...row, tags: [] })));
+      seededOnStartupRef.current = true;
+      nextPeople = await listPeople();
+    }
+
+    setPeople(nextPeople);
     setLoading(false);
   }, []);
 
