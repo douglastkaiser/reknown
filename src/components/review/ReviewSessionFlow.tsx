@@ -2,6 +2,7 @@ import type { Person, Settings } from '../../types';
 import { useReviewSession } from '../../hooks/useReviewSession';
 import { Button } from '../common/Button';
 import { GradeControls } from './GradeControls';
+import { FacePickCard } from './FacePickCard';
 import { NameGuessCard } from './NameGuessCard';
 import { RevealCard } from './RevealCard';
 import { ReviewSummary } from './ReviewSummary';
@@ -22,6 +23,19 @@ export function ReviewSessionFlow({ people, settings }: { people: Person[]; sett
 
   if (session.current.type === 'face_to_name') {
     const person = people.find((candidate) => candidate.id === session.current?.personId);
+    if (session.current.options?.length) {
+      return (
+        <FacePickCard
+          card={session.current}
+          photoUrl={person?.photoDataUrl || person?.photoUrl}
+          revealed={session.revealed}
+          onToggleReveal={session.toggleReveal}
+          onSubmitChoice={session.submitChoice}
+          onContinue={session.continueAfterGuess}
+        />
+      );
+    }
+
     return (
       <NameGuessCard
         card={session.current}
