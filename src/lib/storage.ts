@@ -9,6 +9,9 @@ const DEFAULT_SETTINGS: Settings = {
   newCardsWhenQueueSmall: 8,
   queueCap: 30,
   maturityThreshold: 21,
+  facerOptionCount: 4,
+  facerHardOptionCount: 8,
+  hardModeEnabled: false,
   cardTypeWeights: {
     name_to_face: 4,
     face_to_name: 4,
@@ -86,8 +89,17 @@ export async function getSettings(): Promise<Settings> {
   const db = await dbPromise;
   const existing = await db.get('settings', 'app');
   if (existing) {
-    const merged = { ...DEFAULT_SETTINGS, ...existing, id: 'app' as const };
-    if (merged.installPromptDismissedAt !== existing.installPromptDismissedAt) {
+    const merged: Settings = {
+      ...DEFAULT_SETTINGS,
+      ...existing,
+      id: 'app',
+      cardTypeWeights: {
+        ...DEFAULT_SETTINGS.cardTypeWeights,
+        ...existing.cardTypeWeights,
+      },
+    };
+
+    if (JSON.stringify(merged) !== JSON.stringify(existing)) {
       const now = Date.now();
       const next = { ...merged, updatedAt: now };
       await db.put('settings', next);

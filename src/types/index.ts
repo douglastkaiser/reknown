@@ -28,6 +28,8 @@ export interface ReviewCard {
   type: CardType;
   prompt: string;
   answer: string;
+  options?: string[];
+  correctOptionIndex?: number;
   srs: SRSData;
   createdAt: number;
   updatedAt: number;
@@ -57,6 +59,9 @@ export interface Settings {
   newCardsWhenQueueSmall: number;
   queueCap: number;
   maturityThreshold: number;
+  facerOptionCount: number;
+  facerHardOptionCount: number;
+  hardModeEnabled: boolean;
   cardTypeWeights: Record<CardType, number>;
   installPromptDismissedAt: number | null;
   updatedAt: number;

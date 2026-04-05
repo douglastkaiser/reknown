@@ -29,6 +29,34 @@ function evaluateGuess(answer: string, guess: string): GuessEvaluation {
   return { quality: 1, matched: false, feedback: `Not quite. Correct answer: ${answer}` };
 }
 
+function shuffle<T>(values: T[]): T[] {
+  const copy = [...values];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settings): ReviewCard[] {
+  const optionCount = settings.hardModeEnabled ? settings.facerHardOptionCount : settings.facerOptionCount;
+  if (optionCount < 2) return cards;
+
+  return cards.map((card) => {
+    if (card.type !== 'face_to_name') return card;
+
+    const distractors = shuffle(
+      people
+        .filter((person) => person.id !== card.personId)
+        .map((person) => person.name)
+    ).slice(0, Math.max(0, optionCount - 1));
+
+    const options = shuffle([card.answer, ...distractors]);
+    const correctOptionIndex = options.findIndex((value) => value === card.answer);
+    return { ...card, options, correctOptionIndex };
+  });
+}
+
 export function useReviewSession(people: Person[], settings: Settings | null) {
   const [pool, setPool] = useState<ReviewCard[]>([]);
   const [index, setIndex] = useState(0);
@@ -37,7 +65,7 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
 
   const queue = useMemo(() => {
     if (!settings) return [];
-    const generated = generateCardsForPeople(people, settings, settings.deckSize);
+    const generated = withFaceOptions(generateCardsForPeople(people, settings, settings.deckSize), people, settings);
     return buildReviewQueue({
       existing: pool.length ? pool : generated,
       generatedNew: generated,
@@ -50,8 +78,9 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
 
   function start() {
     if (!settings) return;
-    const newPool = generateCardsForPeople(people, settings, settings.deckSize);
-    setPool(newPool.length ? newPool : people.map((p) => makeReviewCard(p, 'face_to_name')));
+    const newPool = withFaceOptions(generateCardsForPeople(people, settings, settings.deckSize), people, settings);
+    const fallback = withFaceOptions(people.map((p) => makeReviewCard(p, 'face_to_name')), people, settings);
+    setPool(newPool.length ? newPool : fallback);
     setIndex(0);
     setRevealed(false);
     setGuessEvaluation(null);
@@ -91,6 +120,15 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
     advanceWithQuality(guessEvaluation.quality);
   }
 
+  function submitChoice(optionIndex: number): GuessEvaluation | null {
+    if (!current || current.type !== 'face_to_name') return null;
+    const matched = optionIndex === current.correctOptionIndex;
+    const feedback = matched ? 'Correct — great recall.' : `Not quite. Correct answer: ${current.answer}`;
+    const evaluated = { quality: matched ? 5 : 1, matched, feedback };
+    setGuessEvaluation(evaluated);
+    return evaluated;
+  }
+
   return {
     queue,
     current,
@@ -103,6 +141,7 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
     toggleReveal,
     grade,
     submitGuess,
+    submitChoice,
     continueAfterGuess,
   };
 }
