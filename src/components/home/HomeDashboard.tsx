@@ -33,6 +33,10 @@ export function HomeDashboard({
         <StatPill label="Got it %" value={formatPercent(gotIt)} />
         <StatPill label="Needs work %" value={formatPercent(needsWork)} />
       </div>
+
+      <div className="rounded-xl border border-outline bg-surface p-3 text-sm text-muted">
+        Starter people were preloaded for your first session. Use Import to replace them with your own LinkedIn connections, or delete any starter profile from People.
+      </div>
       <div className="rounded-xl border border-outline bg-surface p-3 text-sm text-muted">
         <p>Face→Name accuracy: {formatPercent(reviewMetrics?.faceToName.accuracy ?? 0)}</p>
         <p>Face MC accuracy: {formatPercent(reviewMetrics?.facerMultipleChoice.accuracy ?? 0)}</p>

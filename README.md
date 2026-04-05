@@ -72,6 +72,20 @@ Dashboard metrics:
 4. Reknown attempts LinkedIn-specific parsing first, then falls back to generic CSV parsing.
 5. Confirm the preview to seed people into your review pool.
 
+## Starter data behavior
+
+- On first run, Reknown checks the local IndexedDB people store.
+- If there are zero people, it preloads a small starter set of public figures.
+- This first-run seed is idempotent for app startup: it only runs when the local database is empty.
+- You can delete any starter person from the **People** screen at any time.
+
+### Replacing starter data with LinkedIn CSV
+
+1. Export your LinkedIn connections CSV.
+2. Open **Import** in Reknown.
+3. Upload or paste the CSV and confirm the preview.
+4. Imported rows are added to your database; if you want a clean list, delete starter entries first, then import.
+
 
 ## GitHub Pages publishing
 

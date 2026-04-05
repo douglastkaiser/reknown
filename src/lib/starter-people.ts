@@ -1,0 +1,56 @@
+import type { CsvPersonRow } from '../types';
+
+export const starterPeople: CsvPersonRow[] = [
+  {
+    name: 'Satya Nadella',
+    headline: 'Chairman and CEO',
+    company: 'Microsoft',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/6/63/Satya_Nadella_2023.jpg',
+    notes: 'Public-company leadership and AI platform strategy.',
+  },
+  {
+    name: 'Taylor Swift',
+    headline: 'Singer-songwriter and producer',
+    company: 'Entertainment',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/f/f2/Taylor_Swift_The_Eras_Tour.png',
+    notes: 'Global touring artist with major fan engagement and brand partnerships.',
+  },
+  {
+    name: 'Simone Biles',
+    headline: 'Olympic gymnast',
+    company: 'Team USA',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/2/28/Simone_Biles_2016.jpg',
+    notes: 'Decorated gymnast and mental-health advocate.',
+  },
+  {
+    name: 'Jensen Huang',
+    headline: 'President and CEO',
+    company: 'NVIDIA',
+    notes: 'Known for GPU and AI infrastructure leadership.',
+  },
+  {
+    name: 'Serena Williams',
+    headline: 'Former world No. 1 tennis player',
+    company: 'Wyn Beauty / Serena Ventures',
+    notes: 'Athlete and entrepreneur in beauty and venture investing.',
+  },
+  {
+    name: 'Volodymyr Zelenskyy',
+    headline: 'President',
+    company: 'Ukraine',
+    notes: 'Head of state and frequent international diplomacy figure.',
+  },
+  {
+    name: 'Tim Cook',
+    headline: 'Chief Executive Officer',
+    company: 'Apple',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/f/fa/Tim_Cook_%28cropped%29.jpg',
+    notes: 'Leads Apple product ecosystem and operations strategy.',
+  },
+  {
+    name: 'Megan Rapinoe',
+    headline: 'Former professional soccer player',
+    company: 'USWNT',
+    notes: 'World Cup winner and equality advocate.',
+  },
+];

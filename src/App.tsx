@@ -32,6 +32,9 @@ function ImportPage({ onImport }: { onImport: (rows: CsvPersonRow[]) => Promise<
 
   return (
     <div className="space-y-3">
+      <div className="rounded-xl border border-outline bg-surface p-3 text-sm text-muted">
+        Starter people are preloaded on first run. You can delete them anytime or replace them by importing your LinkedIn CSV.
+      </div>
       <CsvUpload onText={onText} />
       <CsvPaste onText={onText} />
       {rows.length ? <ImportPreview rows={rows} onConfirm={() => void onImport(rows)} /> : null}
