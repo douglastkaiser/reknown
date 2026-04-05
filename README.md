@@ -83,6 +83,12 @@ Release flow:
 2. GitHub Actions runs install + build and deploys the `dist/` artifact to Pages via `.github/workflows/deploy.yml`.
 3. Do **not** commit generated `docs/` output for publishing.
 
+Base path requirement for project Pages deployments:
+
+- Vite's `base` is configured from `VITE_BASE_PATH` and defaults to `/reknown/` for this repository.
+- For `https://<user>.github.io/<repo>/` deployments, set `VITE_BASE_PATH` to `/<repo>/` (for this repo: `/reknown/`).
+- `BrowserRouter` uses `import.meta.env.BASE_URL` as `basename`, so wildcard redirects (for unknown routes) continue routing to `/home` under the same base path.
+
 ## Stack
 
 - React 18 + TypeScript
