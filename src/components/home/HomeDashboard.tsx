@@ -1,47 +1,41 @@
-import type { AppStats, ReviewMetrics } from '../../types';
-import { StatPill } from '../common/StatPill';
+import { Link } from 'react-router-dom';
 import { InstallPromptCard } from './InstallPromptCard';
 
-function formatPercent(value: number) {
-  return `${Math.round(value)}%`;
-}
-
 export function HomeDashboard({
-  stats,
-  reviewMetrics,
   installPromptDismissed,
   onDismissInstallPrompt,
 }: {
-  stats: AppStats | null;
-  reviewMetrics: ReviewMetrics | null;
   installPromptDismissed: boolean;
   onDismissInstallPrompt: () => Promise<void>;
 }) {
-  const gotIt = reviewMetrics?.overall.accuracy ?? 0;
-  const needsWork = 100 - gotIt;
-
   return (
     <section className="space-y-3">
       <InstallPromptCard dismissed={installPromptDismissed} onDismiss={onDismissInstallPrompt} />
-      <div className="grid grid-cols-2 gap-2">
-        <StatPill label="Due" value={stats?.dueCards ?? 0} />
-        <StatPill label="Reviews" value={stats?.totalReviews ?? 0} />
-        <StatPill label="Mature" value={stats?.matureCards ?? 0} />
-        <StatPill label="Avg EF" value={stats?.averageEaseFactor?.toFixed(2) ?? '2.50'} />
+
+      <div className="rounded-xl border border-outline bg-surface p-4">
+        <h2 className="text-lg font-semibold text-text">Ready for a quick review?</h2>
+        <p className="mt-1 text-sm text-muted">Jump back into your queue and keep your momentum going.</p>
+        <Link
+          to="/review"
+          className="mt-3 inline-flex w-full items-center justify-center rounded-xl border border-border bg-accent/20 px-3 py-2 text-sm font-medium text-text hover:bg-accent/30"
+        >
+          Continue Review
+        </Link>
       </div>
+
       <div className="grid grid-cols-2 gap-2">
-        <StatPill label="Got it %" value={formatPercent(gotIt)} />
-        <StatPill label="Needs work %" value={formatPercent(needsWork)} />
+        <Link to="/import" className="rounded-xl border border-outline bg-surface p-3 text-sm hover:bg-white/5">
+          <p className="font-medium text-text">Import People</p>
+          <p className="mt-1 text-muted">Upload CSV or paste rows.</p>
+        </Link>
+        <Link to="/people" className="rounded-xl border border-outline bg-surface p-3 text-sm hover:bg-white/5">
+          <p className="font-medium text-text">Manage People</p>
+          <p className="mt-1 text-muted">Add, edit, or clean up profiles.</p>
+        </Link>
       </div>
 
       <div className="rounded-xl border border-outline bg-surface p-3 text-sm text-muted">
         Starter people were preloaded for your first session. Use Import to replace them with your own LinkedIn connections, or delete any starter profile from People.
-      </div>
-      <div className="rounded-xl border border-outline bg-surface p-3 text-sm text-muted">
-        <p>Face→Name accuracy: {formatPercent(reviewMetrics?.faceToName.accuracy ?? 0)}</p>
-        <p>Face MC accuracy: {formatPercent(reviewMetrics?.facerMultipleChoice.accuracy ?? 0)}</p>
-        <p>Trend (7d): {formatPercent(reviewMetrics?.trend7d.accuracy ?? 0)}</p>
-        <p>Trend (30d): {formatPercent(reviewMetrics?.trend30d.accuracy ?? 0)}</p>
       </div>
     </section>
   );
