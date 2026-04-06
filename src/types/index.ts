@@ -1,4 +1,4 @@
-export type CardType = 'name_to_face' | 'face_to_name' | 'headline' | 'company';
+export type CardType = 'name_to_face' | 'face_to_name';
 
 export interface Person {
   id: string;
@@ -33,6 +33,7 @@ export interface ReviewCard {
   type: CardType;
   prompt: string;
   answer: string;
+  /** For name_to_face: photo URLs of options */
   options?: string[];
   correctOptionIndex?: number;
   srs: SRSData;
@@ -59,7 +60,7 @@ export interface AppStats {
 }
 
 export type ReviewOutcome = 'accepted' | 'rejected';
-export type ReviewMode = 'manual_grade' | 'typed_guess' | 'multiple_choice';
+export type ReviewMode = 'typed_guess' | 'multiple_choice';
 
 export interface ReviewEvent {
   id: number;
@@ -88,7 +89,7 @@ export interface AccuracyMetric {
 export interface ReviewMetrics {
   overall: AccuracyMetric;
   faceToName: AccuracyMetric;
-  facerMultipleChoice: AccuracyMetric;
+  nameToFace: AccuracyMetric;
   trend7d: AccuracyMetric;
   trend30d: AccuracyMetric;
 }
@@ -100,17 +101,9 @@ export interface Settings {
   queueCap: number;
   maturityThreshold: number;
   facerOptionCount: number;
-  facerHardOptionCount: number;
-  hardModeEnabled: boolean;
   cardTypeWeights: Record<CardType, number>;
   installPromptDismissedAt: number | null;
   updatedAt: number;
-}
-
-export interface ReviewGrade {
-  cardId: string;
-  quality: number;
-  reviewedAt: number;
 }
 
 export interface CsvPersonRow {

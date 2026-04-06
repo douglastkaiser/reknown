@@ -1,41 +1,67 @@
 import type { Person, ReviewCard, Settings } from '../types';
 import { makeReviewCard } from './storage';
+import { selectDistractors } from './face-distractors';
 
-function weightedPick<T extends string>(weights: Record<T, number>, excludes: Set<T>): T {
-  const allowed = (Object.keys(weights) as T[]).filter((key) => !excludes.has(key));
-  const total = allowed.reduce((acc, key) => acc + Math.max(0, weights[key]), 0);
-  const target = Math.random() * Math.max(total, 1);
-  let running = 0;
-  for (const key of allowed) {
-    running += Math.max(0, weights[key]);
-    if (running >= target) return key;
+function hasPhoto(person: Person): boolean {
+  return Boolean(person.photoDataUrl || person.photoUrl);
+}
+
+function getPhotoUrl(person: Person): string {
+  return person.photoDataUrl || person.photoUrl || '';
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
   }
-  return allowed[0];
+  return copy;
 }
 
 export function generateCardsForPeople(people: Person[], settings: Settings, count = settings.deckSize): ReviewCard[] {
   const cards: ReviewCard[] = [];
-  const types = Object.keys(settings.cardTypeWeights) as ReviewCard['type'][];
+  const peopleWithPhotos = people.filter(hasPhoto);
 
   for (const person of people) {
-    const maturityMultiplier = person.updatedAt < Date.now() - settings.maturityThreshold * 24 * 60 * 60 * 1000 ? 0.85 : 1.15;
-    const weights = Object.fromEntries(
-      types.map((type) => [type, settings.cardTypeWeights[type] * maturityMultiplier])
-    ) as Settings['cardTypeWeights'];
+    if (!hasPhoto(person)) continue;
 
-    const excludes = new Set<ReviewCard['type']>();
-    if (!person.photoDataUrl && !person.photoUrl) {
-      excludes.add('face_to_name');
-      excludes.add('name_to_face');
-    }
-    if (!person.headline) excludes.add('headline');
-    if (!person.company) excludes.add('company');
-
-    const type = weightedPick(weights, excludes);
+    const canDoNameToFace = peopleWithPhotos.length >= 3;
+    const faceWeight = settings.cardTypeWeights.face_to_name;
+    const nameWeight = canDoNameToFace ? settings.cardTypeWeights.name_to_face : 0;
+    const total = faceWeight + nameWeight;
+    const type = Math.random() * total < faceWeight ? 'face_to_name' : 'name_to_face';
     cards.push(makeReviewCard(person, type));
   }
 
-  return cards.slice(0, count);
+  return shuffle(cards).slice(0, count);
+}
+
+export function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settings): ReviewCard[] {
+  const optionCount = settings.facerOptionCount;
+  if (optionCount < 2) return cards;
+
+  return cards.map((card) => {
+    if (card.type !== 'name_to_face') return card;
+
+    const correctPerson = people.find((p) => p.id === card.personId);
+    if (!correctPerson) return card;
+
+    const distractorPeople = selectDistractors(card.personId, people, Math.max(0, optionCount - 1), 'similar-first');
+    const correctUrl = getPhotoUrl(correctPerson);
+    const allOptions = [
+      { url: correctUrl, personId: correctPerson.id },
+      ...distractorPeople.map((p) => ({ url: getPhotoUrl(p), personId: p.id })),
+    ];
+    const shuffled = shuffle(allOptions);
+    const correctIndex = shuffled.findIndex((opt) => opt.personId === correctPerson.id);
+
+    return {
+      ...card,
+      options: shuffled.map((opt) => opt.url),
+      correctOptionIndex: correctIndex,
+    };
+  });
 }
 
 export function buildReviewQueue(params: {
@@ -52,10 +78,5 @@ export function buildReviewQueue(params: {
     ? [...overdueSorted, ...generatedNew.slice(0, minQueueSize - overdueSorted.length)]
     : overdueSorted;
 
-  for (let i = queue.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [queue[i], queue[j]] = [queue[j], queue[i]];
-  }
-
-  return queue.slice(0, queueCap);
+  return shuffle(queue).slice(0, queueCap);
 }

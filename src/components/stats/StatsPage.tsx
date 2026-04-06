@@ -31,7 +31,7 @@ export function StatsPage({
 
       <div className="rounded-xl border border-outline bg-surface p-3 text-sm text-muted">
         <p>Face→Name accuracy: {formatPercent(reviewMetrics?.faceToName.accuracy ?? 0)}</p>
-        <p>Face MC accuracy: {formatPercent(reviewMetrics?.facerMultipleChoice.accuracy ?? 0)}</p>
+        <p>Name→Face accuracy: {formatPercent(reviewMetrics?.nameToFace.accuracy ?? 0)}</p>
         <p>Trend (7d): {formatPercent(reviewMetrics?.trend7d.accuracy ?? 0)}</p>
         <p>Trend (30d): {formatPercent(reviewMetrics?.trend30d.accuracy ?? 0)}</p>
       </div>

@@ -1,11 +1,10 @@
 import { useMemo, useState } from 'react';
 import type { Person, ReviewCard, ReviewMode, Settings } from '../types';
-import { buildReviewQueue, generateCardsForPeople } from '../lib/card-generator';
-import { selectDistractors } from '../lib/face-distractors';
+import { buildReviewQueue, generateCardsForPeople, withFaceOptions } from '../lib/card-generator';
 import { makeReviewCard, recordReviewEvent, recordSessionSummary } from '../lib/storage';
 import { reviewSRS } from '../lib/srs';
 
-export interface GuessEvaluation {
+export interface GuessResult {
   quality: number;
   matched: boolean;
   feedback: string;
@@ -16,48 +15,25 @@ function normalize(value: string) {
   return value.toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
-function evaluateGuess(answer: string, guess: string): GuessEvaluation {
+function evaluateGuess(answer: string, guess: string): GuessResult {
   const normalizedAnswer = normalize(answer);
   const normalizedGuess = normalize(guess);
 
   if (normalizedGuess === normalizedAnswer) {
-    return { quality: 5, matched: true, feedback: 'Correct — great recall.', mode: 'typed_guess' };
+    return { quality: 5, matched: true, feedback: 'Correct!', mode: 'typed_guess' };
   }
 
   if (normalizedGuess && (normalizedAnswer.includes(normalizedGuess) || normalizedGuess.includes(normalizedAnswer))) {
     return { quality: 3, matched: false, feedback: `Close. Correct answer: ${answer}`, mode: 'typed_guess' };
   }
 
-  return { quality: 1, matched: false, feedback: `Not quite. Correct answer: ${answer}`, mode: 'typed_guess' };
-}
-
-function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settings): ReviewCard[] {
-  const optionCount = settings.hardModeEnabled ? settings.facerHardOptionCount : settings.facerOptionCount;
-  if (optionCount < 2) return cards;
-
-  return cards.map((card) => {
-    if (card.type !== 'face_to_name') return card;
-
-    const distractorPeople = selectDistractors(
-      card.personId,
-      people,
-      Math.max(0, optionCount - 1),
-      'similar-first'
-    );
-    const distractorNames = distractorPeople.map((person) => person.name);
-    const options = [card.answer, ...distractorNames]
-      .filter((value, index, values) => values.indexOf(value) === index)
-      .sort(() => Math.random() - 0.5);
-    const correctOptionIndex = options.findIndex((value) => value === card.answer);
-    return { ...card, options, correctOptionIndex };
-  });
+  return { quality: 1, matched: false, feedback: `Incorrect. Correct answer: ${answer}`, mode: 'typed_guess' };
 }
 
 export function useReviewSession(people: Person[], settings: Settings | null) {
   const [pool, setPool] = useState<ReviewCard[]>([]);
   const [index, setIndex] = useState(0);
-  const [revealed, setRevealed] = useState(false);
-  const [guessEvaluation, setGuessEvaluation] = useState<GuessEvaluation | null>(null);
+  const [guessResult, setGuessResult] = useState<GuessResult | null>(null);
   const [correctInSession, setCorrectInSession] = useState(0);
   const [incorrectInSession, setIncorrectInSession] = useState(0);
   const [sessionSummarySaved, setSessionSummarySaved] = useState(false);
@@ -78,22 +54,17 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
   function start() {
     if (!settings) return;
     const newPool = withFaceOptions(generateCardsForPeople(people, settings, settings.deckSize), people, settings);
-    const fallback = withFaceOptions(people.map((p) => makeReviewCard(p, 'face_to_name')), people, settings);
+    const fallback = withFaceOptions(
+      people.filter((p) => p.photoDataUrl || p.photoUrl).map((p) => makeReviewCard(p, 'face_to_name')),
+      people,
+      settings,
+    );
     setPool(newPool.length ? newPool : fallback);
     setIndex(0);
-    setRevealed(false);
-    setGuessEvaluation(null);
+    setGuessResult(null);
     setCorrectInSession(0);
     setIncorrectInSession(0);
     setSessionSummarySaved(false);
-  }
-
-  function reveal() {
-    setRevealed(true);
-  }
-
-  function toggleReveal() {
-    setRevealed((value) => !value);
   }
 
   function advanceWithQuality(quality: number, mode: ReviewMode, outcome: 'accepted' | 'rejected') {
@@ -115,11 +86,8 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
 
     const nextCorrect = correctInSession + (outcome === 'accepted' ? 1 : 0);
     const nextIncorrect = incorrectInSession + (outcome === 'rejected' ? 1 : 0);
-    if (outcome === 'accepted') {
-      setCorrectInSession(nextCorrect);
-    } else {
-      setIncorrectInSession(nextIncorrect);
-    }
+    if (outcome === 'accepted') setCorrectInSession(nextCorrect);
+    else setIncorrectInSession(nextIncorrect);
 
     const nextReviewed = index + 1;
     if (!sessionSummarySaved && nextReviewed >= queue.length) {
@@ -133,49 +101,44 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
       setSessionSummarySaved(true);
     }
 
-    setIndex((value) => value + 1);
-    setRevealed(false);
-    setGuessEvaluation(null);
+    setIndex((v) => v + 1);
+    setGuessResult(null);
   }
 
-  function grade(quality: number) {
-    advanceWithQuality(quality, 'manual_grade', quality >= 3 ? 'accepted' : 'rejected');
-  }
-
-  function submitGuess(guess: string): GuessEvaluation | null {
+  function submitGuess(guess: string): GuessResult | null {
     if (!current || current.type !== 'face_to_name') return null;
-    const evaluated = evaluateGuess(current.answer, guess);
-    setGuessEvaluation(evaluated);
-    return evaluated;
+    const result = evaluateGuess(current.answer, guess);
+    setGuessResult(result);
+    return result;
+  }
+
+  function submitFaceChoice(optionIndex: number): GuessResult | null {
+    if (!current || current.type !== 'name_to_face') return null;
+    const matched = optionIndex === current.correctOptionIndex;
+    const result: GuessResult = {
+      quality: matched ? 5 : 1,
+      matched,
+      feedback: matched ? 'Correct!' : 'Incorrect.',
+      mode: 'multiple_choice',
+    };
+    setGuessResult(result);
+    return result;
   }
 
   function continueAfterGuess() {
-    if (!guessEvaluation) return;
-    advanceWithQuality(guessEvaluation.quality, guessEvaluation.mode, guessEvaluation.matched ? 'accepted' : 'rejected');
-  }
-
-  function submitChoice(optionIndex: number): GuessEvaluation | null {
-    if (!current || current.type !== 'face_to_name') return null;
-    const matched = optionIndex === current.correctOptionIndex;
-    const feedback = matched ? 'Correct — great recall.' : `Not quite. Correct answer: ${current.answer}`;
-    const evaluated = { quality: matched ? 5 : 1, matched, feedback, mode: 'multiple_choice' as const };
-    setGuessEvaluation(evaluated);
-    return evaluated;
+    if (!guessResult) return;
+    advanceWithQuality(guessResult.quality, guessResult.mode, guessResult.matched ? 'accepted' : 'rejected');
   }
 
   return {
     queue,
     current,
     index,
-    revealed,
     done: index >= queue.length,
-    guessEvaluation,
+    guessResult,
     start,
-    reveal,
-    toggleReveal,
-    grade,
     submitGuess,
-    submitChoice,
+    submitFaceChoice,
     continueAfterGuess,
   };
 }
