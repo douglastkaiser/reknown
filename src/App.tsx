@@ -88,7 +88,7 @@ export default function App() {
         />
         <Route path="/review" element={<ReviewSessionFlow people={peopleState.people} settings={settings} />} />
         <Route path="/import" element={<ImportPage onImport={imported} />} />
-        <Route path="*" element={<Navigate to="/home" replace />} />
+        <Route path="*" element={<Navigate to="/review" replace />} />
       </Routes>
     </AppShell>
   );
