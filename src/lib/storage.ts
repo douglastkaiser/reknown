@@ -11,7 +11,26 @@ import type {
 } from '../types';
 
 const DB_NAME = 'reknown-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+
+let activeScope: string | null = null;
+
+export function setActiveScope(scope: string | null) {
+  activeScope = scope;
+}
+
+export function getActiveScope(): string | null {
+  return activeScope;
+}
+
+function requireScope(): string {
+  if (!activeScope) throw new Error('No active data scope set');
+  return activeScope;
+}
+
+function inScope<T extends { scope?: string }>(rows: T[]): T[] {
+  return rows.filter((r) => r.scope === activeScope);
+}
 const DEFAULT_SETTINGS: Settings = {
   id: 'app',
   deckSize: 20,
@@ -73,6 +92,16 @@ const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
       const summaries = db.createObjectStore('sessionSummaries', { keyPath: 'id' });
       summaries.createIndex('by-timestamp', 'timestamp');
     }
+
+    if (oldVersion < 3) {
+      // Per-user data scoping was introduced. Legacy rows have no scope and
+      // could leak across users on this device, so clear them on upgrade.
+      const tx = db.transaction(['people', 'stats', 'reviewEvents', 'sessionSummaries'], 'readwrite');
+      void tx.objectStore('people').clear();
+      void tx.objectStore('stats').clear();
+      void tx.objectStore('reviewEvents').clear();
+      void tx.objectStore('sessionSummaries').clear();
+    }
   },
 });
 
@@ -82,17 +111,21 @@ function id() {
 
 export async function listPeople(): Promise<Person[]> {
   const db = await dbPromise;
-  return db.getAllFromIndex('people', 'by-name');
+  const all = await db.getAllFromIndex('people', 'by-name');
+  return inScope(all);
 }
 
 export async function getPerson(personId: string): Promise<Person | undefined> {
   const db = await dbPromise;
-  return db.get('people', personId);
+  const row = await db.get('people', personId);
+  if (!row || row.scope !== activeScope) return undefined;
+  return row;
 }
 
 export async function createPerson(input: Omit<Person, 'id' | 'createdAt' | 'updatedAt'>): Promise<Person> {
+  const scope = requireScope();
   const now = Date.now();
-  const person: Person = { ...input, id: id(), createdAt: now, updatedAt: now };
+  const person: Person = { ...input, id: id(), createdAt: now, updatedAt: now, scope };
   const db = await dbPromise;
   await db.put('people', person);
   return person;
@@ -101,15 +134,32 @@ export async function createPerson(input: Omit<Person, 'id' | 'createdAt' | 'upd
 export async function updatePerson(personId: string, updates: Partial<Omit<Person, 'id' | 'createdAt'>>): Promise<Person | null> {
   const db = await dbPromise;
   const current = await db.get('people', personId);
-  if (!current) return null;
-  const next: Person = { ...current, ...updates, updatedAt: Date.now() };
+  if (!current || current.scope !== activeScope) return null;
+  const next: Person = { ...current, ...updates, updatedAt: Date.now(), scope: current.scope };
   await db.put('people', next);
   return next;
 }
 
 export async function deletePerson(personId: string): Promise<void> {
   const db = await dbPromise;
+  const current = await db.get('people', personId);
+  if (!current || current.scope !== activeScope) return;
   await db.delete('people', personId);
+}
+
+export async function clearScope(scope: string): Promise<void> {
+  const db = await dbPromise;
+  const tx = db.transaction(['people', 'stats', 'reviewEvents', 'sessionSummaries'], 'readwrite');
+  for (const storeName of ['people', 'stats', 'reviewEvents', 'sessionSummaries'] as const) {
+    const store = tx.objectStore(storeName);
+    const rows = await store.getAll();
+    for (const row of rows as Array<{ scope?: string; id: string | number }>) {
+      if (row.scope === scope) {
+        await store.delete(row.id as never);
+      }
+    }
+  }
+  await tx.done;
 }
 
 export async function getSettings(): Promise<Settings> {
@@ -146,12 +196,18 @@ export async function updateSettings(updates: Partial<Omit<Settings, 'id' | 'upd
   return next;
 }
 
+function statsKey(): string {
+  return `app:${requireScope()}`;
+}
+
 export async function getStats(): Promise<AppStats> {
   const db = await dbPromise;
-  const existing = await db.get('stats', 'app');
+  const key = statsKey();
+  const existing = await db.get('stats', key);
   if (existing) return existing;
   const initial: AppStats = {
-    id: 'app',
+    id: key,
+    scope: activeScope ?? undefined,
     totalCards: 0,
     dueCards: 0,
     matureCards: 0,
@@ -165,7 +221,7 @@ export async function getStats(): Promise<AppStats> {
 
 export async function updateStats(updates: Partial<Omit<AppStats, 'id' | 'updatedAt'>>): Promise<AppStats> {
   const current = await getStats();
-  const next = { ...current, ...updates, id: 'app' as const, updatedAt: Date.now() };
+  const next = { ...current, ...updates, id: statsKey(), updatedAt: Date.now() };
   const db = await dbPromise;
   await db.put('stats', next);
   return next;
@@ -230,16 +286,18 @@ function summarizeAccuracy(events: Pick<ReviewEvent, 'outcome'>[]): AccuracyMetr
 export async function recordReviewEvent(
   event: Omit<ReviewEvent, 'id'>
 ): Promise<void> {
+  const scope = requireScope();
   const db = await dbPromise;
-  await db.add('reviewEvents', event as ReviewEvent);
+  await db.add('reviewEvents', { ...event, scope } as ReviewEvent);
   emitMetricsUpdatedEvent();
 }
 
 export async function recordSessionSummary(
   summary: Omit<SessionSummary, 'id'>
 ): Promise<SessionSummary> {
+  const scope = requireScope();
   const db = await dbPromise;
-  const fullSummary: SessionSummary = { ...summary, id: id() };
+  const fullSummary: SessionSummary = { ...summary, id: id(), scope };
   await db.add('sessionSummaries', fullSummary);
   emitMetricsUpdatedEvent();
   return fullSummary;
@@ -247,7 +305,7 @@ export async function recordSessionSummary(
 
 export async function getReviewMetrics(now: number = Date.now()): Promise<ReviewMetrics> {
   const db = await dbPromise;
-  const events = await db.getAllFromIndex('reviewEvents', 'by-timestamp');
+  const events = inScope(await db.getAllFromIndex('reviewEvents', 'by-timestamp'));
   const sevenDayCutoff = now - 7 * 24 * 60 * 60 * 1000;
   const thirtyDayCutoff = now - 30 * 24 * 60 * 60 * 1000;
 

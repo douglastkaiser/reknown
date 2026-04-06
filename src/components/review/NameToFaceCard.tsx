@@ -42,7 +42,7 @@ export function NameToFaceCard({
       <h3 className="text-center text-2xl font-bold text-text">{person.name}</h3>
 
       <div className="grid grid-cols-2 gap-3">
-        {(card.options ?? []).map((photoUrl, index) => (
+        {(card.options ?? []).map((photoUrl, index) => (!photoUrl ? null :
           <button
             key={`${card.id}:${index}`}
             onClick={() => handleChoice(index)}

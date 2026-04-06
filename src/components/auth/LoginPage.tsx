@@ -24,6 +24,11 @@ export function LoginPage() {
         <div className="space-y-2">
           <h1 className="text-4xl font-bold tracking-tight text-text">Reknown</h1>
           <p className="text-muted">Learn names and faces with spaced repetition</p>
+          <p className="text-sm text-muted/80">
+            Add the people you meet — colleagues, classmates, friends of friends — and Reknown
+            quizzes you on their faces and names with spaced repetition so you actually remember.
+            Your data stays tied to your account on this device.
+          </p>
         </div>
 
         <div className="space-y-3">

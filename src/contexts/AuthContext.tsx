@@ -1,11 +1,13 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
+import { clearScope, setActiveScope } from '../lib/storage';
 
 interface AuthState {
   user: User | null;
   isGuest: boolean;
   loading: boolean;
+  scope: string | null;
   signInWithGoogle: () => Promise<void>;
   continueAsGuest: () => void;
   signOut: () => Promise<void>;
@@ -18,11 +20,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isGuest, setIsGuest] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const scope = user ? `u:${user.uid}` : isGuest ? 'guest' : null;
+
+  useEffect(() => {
+    setActiveScope(scope);
+  }, [scope]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
         setIsGuest(false);
+        // Signing in over a guest session: discard guest data so it does not
+        // leak between sessions.
+        void clearScope('guest');
       }
       setLoading(false);
     });
@@ -41,12 +52,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await firebaseSignOut(auth);
     setUser(null);
     setIsGuest(false);
+    setActiveScope(null);
   }
 
   const authenticated = Boolean(user) || isGuest;
 
   return (
-    <AuthContext.Provider value={{ user, isGuest, loading: loading && !authenticated, signInWithGoogle, continueAsGuest, signOut }}>
+    <AuthContext.Provider value={{ user, isGuest, scope, loading: loading && !authenticated, signInWithGoogle, continueAsGuest, signOut }}>
       {children}
     </AuthContext.Provider>
   );

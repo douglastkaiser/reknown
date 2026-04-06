@@ -9,6 +9,7 @@ import { CsvUpload } from './components/import/CsvUpload';
 import { CsvPaste } from './components/import/CsvPaste';
 import { ImportPreview } from './components/import/ImportPreview';
 import { StatsPage } from './components/stats/StatsPage';
+import { AboutPage } from './pages/AboutPage';
 import { useAuth } from './contexts/AuthContext';
 import { usePeople } from './hooks/usePeople';
 import { useStats } from './hooks/useStats';
@@ -85,6 +86,7 @@ function AuthenticatedApp() {
           path="/stats"
           element={<StatsPage stats={statsState.stats} reviewMetrics={statsState.reviewMetrics} />}
         />
+        <Route path="/about" element={<AboutPage />} />
         <Route path="*" element={<Navigate to="/review" replace />} />
       </Routes>
     </AppShell>

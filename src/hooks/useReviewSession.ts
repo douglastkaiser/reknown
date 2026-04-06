@@ -116,9 +116,24 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
 
   function submitGuess(guess: string): GuessResult | null {
     if (!current || current.type !== 'face_to_name') return null;
-    const result = evaluateGuess(current.answer, guess);
-    setGuessResult(result);
-    return result;
+    const person = people.find((p) => p.id === current.personId);
+    const acceptedAnswers = [current.answer, ...(person?.nicknames ?? [])];
+    let best: GuessResult | null = null;
+    for (const answer of acceptedAnswers) {
+      const result = evaluateGuess(answer, guess);
+      if (result.matched) {
+        best = result;
+        break;
+      }
+      if (!best || result.quality > best.quality) best = result;
+    }
+    const result = best ?? evaluateGuess(current.answer, guess);
+    // Always show the canonical name in feedback.
+    const finalResult: GuessResult = result.matched
+      ? result
+      : { ...result, feedback: `Incorrect. Correct answer: ${current.answer}` };
+    setGuessResult(finalResult);
+    return finalResult;
   }
 
   function submitFaceChoice(optionIndex: number): GuessResult | null {
