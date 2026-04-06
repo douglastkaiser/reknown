@@ -8,6 +8,7 @@ import { ReviewSessionFlow } from './components/review/ReviewSessionFlow';
 import { CsvPaste } from './components/import/CsvPaste';
 import { CsvUpload } from './components/import/CsvUpload';
 import { ImportPreview } from './components/import/ImportPreview';
+import { StatsPage } from './components/stats/StatsPage';
 import { usePeople } from './hooks/usePeople';
 import { useStats } from './hooks/useStats';
 import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
@@ -70,12 +71,14 @@ export default function App() {
           path="/home"
           element={
             <HomeDashboard
-              stats={statsState.stats}
-              reviewMetrics={statsState.reviewMetrics}
               installPromptDismissed={Boolean(settings?.installPromptDismissedAt)}
               onDismissInstallPrompt={dismissInstallPrompt}
             />
           }
+        />
+        <Route
+          path="/stats"
+          element={<StatsPage stats={statsState.stats} reviewMetrics={statsState.reviewMetrics} />}
         />
         <Route
           path="/people"
