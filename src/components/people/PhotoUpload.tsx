@@ -1,29 +1,6 @@
 import { useRef } from 'react';
 import { Button } from '../common/Button';
-
-async function resizeToJpeg(file: File): Promise<string> {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 400 / bitmap.width, 400 / bitmap.height);
-  const width = Math.round(bitmap.width * scale);
-  const height = Math.round(bitmap.height * scale);
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas unavailable');
-  ctx.drawImage(bitmap, 0, 0, width, height);
-  return canvas.toDataURL('image/jpeg', 0.85);
-}
-
-async function urlToData(url: string): Promise<string> {
-  try {
-    const response = await fetch(url, { mode: 'cors' });
-    const blob = await response.blob();
-    return await resizeToJpeg(new File([blob], 'remote.jpg', { type: blob.type || 'image/jpeg' }));
-  } catch {
-    return url;
-  }
-}
+import { resizeToJpeg, urlToData } from '../../lib/image';
 
 export function PhotoUpload({ value, onChange }: { value?: string; onChange: (val: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);

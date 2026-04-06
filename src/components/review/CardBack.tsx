@@ -20,7 +20,12 @@ export function CardBack({
 
       <div className="flex flex-col items-center gap-3">
         {photoUrl ? (
-          <img src={photoUrl} alt={person.name} className="h-32 w-32 rounded-full object-cover" />
+          <img
+            src={photoUrl}
+            alt={person.name}
+            className="h-32 w-32 rounded-full object-cover md:h-40 md:w-40"
+            style={{ objectPosition: 'center 25%' }}
+          />
         ) : null}
         <h3 className="text-xl font-bold text-text">{person.name}</h3>
       </div>

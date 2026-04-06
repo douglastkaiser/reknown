@@ -3,6 +3,7 @@ import type { Person, ReviewCard, ReviewMode, Settings } from '../types';
 import { buildReviewQueue, generateCardsForPeople, withFaceOptions } from '../lib/card-generator';
 import { makeReviewCard, recordReviewEvent, recordSessionSummary } from '../lib/storage';
 import { reviewSRS } from '../lib/srs';
+import { matchHumanNameGuess } from '../lib/name-match';
 
 export interface GuessResult {
   quality: number;
@@ -16,15 +17,23 @@ function normalize(value: string) {
 }
 
 function evaluateGuess(answer: string, guess: string): GuessResult {
-  const normalizedAnswer = normalize(answer);
-  const normalizedGuess = normalize(guess);
+  if (!normalize(guess)) {
+    return { quality: 1, matched: false, feedback: `Incorrect. Correct answer: ${answer}`, mode: 'typed_guess' };
+  }
 
-  if (normalizedGuess === normalizedAnswer) {
+  const match = matchHumanNameGuess(guess, answer);
+
+  if (match.verdict === 'correct') {
     return { quality: 5, matched: true, feedback: 'Correct!', mode: 'typed_guess' };
   }
 
-  if (normalizedGuess && (normalizedAnswer.includes(normalizedGuess) || normalizedGuess.includes(normalizedAnswer))) {
-    return { quality: 3, matched: false, feedback: `Close. Correct answer: ${answer}`, mode: 'typed_guess' };
+  if (match.verdict === 'almost') {
+    return {
+      quality: 4,
+      matched: true,
+      feedback: `Close enough — answer: ${answer}`,
+      mode: 'typed_guess',
+    };
   }
 
   return { quality: 1, matched: false, feedback: `Incorrect. Correct answer: ${answer}`, mode: 'typed_guess' };

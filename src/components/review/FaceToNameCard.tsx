@@ -39,29 +39,35 @@ export function FaceToNameCard({
   }
 
   return (
-    <section className="card space-y-4">
-      <p className="text-center text-xs font-medium uppercase tracking-wider text-muted">Who is this person?</p>
-
-      {photoUrl ? (
-        <div className="flex justify-center">
-          <img src={photoUrl} alt="Person to identify" className="h-48 w-48 rounded-2xl object-cover shadow-lg" />
+    <section className="card space-y-4 md:space-y-0 md:p-8">
+      <div className="flex flex-col gap-6 md:flex-row md:items-center md:gap-10">
+        <div className="flex flex-1 flex-col items-center gap-3">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted">Who is this person?</p>
+          {photoUrl ? (
+            <img
+              src={photoUrl}
+              alt="Person to identify"
+              className="h-56 w-56 rounded-2xl object-cover shadow-lg md:h-72 md:w-72 lg:h-80 lg:w-80"
+              style={{ objectPosition: 'center 25%' }}
+            />
+          ) : (
+            <p className="text-sm text-muted">No photo available.</p>
+          )}
         </div>
-      ) : (
-        <p className="text-center text-sm text-muted">No photo available.</p>
-      )}
 
-      <form onSubmit={handleSubmit} className="space-y-3">
-        <input
-          className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-center text-text placeholder:text-muted/50 focus:border-accent focus:outline-none"
-          placeholder="Type their name..."
-          value={guess}
-          onChange={(e) => setGuess(e.target.value)}
-          autoFocus
-        />
-        <Button type="submit" disabled={!guess.trim()} className="w-full py-3">
-          Submit
-        </Button>
-      </form>
+        <form onSubmit={handleSubmit} className="flex-1 space-y-3 md:max-w-sm">
+          <input
+            className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-center text-text placeholder:text-muted/50 focus:border-accent focus:outline-none md:text-lg"
+            placeholder="Type their name..."
+            value={guess}
+            onChange={(e) => setGuess(e.target.value)}
+            autoFocus
+          />
+          <Button type="submit" disabled={!guess.trim()} className="w-full py-3">
+            Submit
+          </Button>
+        </form>
+      </div>
     </section>
   );
 }
