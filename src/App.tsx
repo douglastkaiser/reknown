@@ -62,7 +62,11 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
         </div>
       ) : null}
 
-      <PeopleList people={peopleState.people} onDelete={(id) => void peopleState.removePerson(id)} />
+      <PeopleList
+        people={peopleState.people}
+        onDelete={(id) => void peopleState.removePerson(id)}
+        onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
+      />
     </div>
   );
 }

@@ -1,39 +1,100 @@
 import type { CsvPersonRow } from '../types';
 
+// RFC4180-ish line tokenizer that handles quoted fields with embedded commas
+// and escaped double quotes ("").
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// LinkedIn's "Download my data" Connections.csv begins with a "Notes:" preamble
+// followed by a blank line and then the real header row. Strip everything until
+// we see a header line that contains both "first name" and "last name".
+function stripLinkedInPreamble(text: string): string {
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const lower = lines[i].toLowerCase();
+    if (lower.includes('first name') && lower.includes('last name')) {
+      return lines.slice(i).join('\n');
+    }
+  }
+  return text;
+}
+
 function parseCsv(text: string): string[][] {
   return text
     .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => line.split(',').map((cell) => cell.trim().replace(/^"|"$/g, '')));
+    .filter((line) => line.trim().length > 0)
+    .map(parseCsvLine);
 }
 
 function headerMap(headers: string[]) {
   return headers.reduce<Record<string, number>>((acc, header, idx) => {
-    acc[header.toLowerCase()] = idx;
+    acc[header.toLowerCase().trim()] = idx;
     return acc;
   }, {});
 }
 
 export function parseLinkedInCsv(text: string): CsvPersonRow[] {
-  const [headers, ...rows] = parseCsv(text);
+  const stripped = stripLinkedInPreamble(text);
+  const parsed = parseCsv(stripped);
+  if (parsed.length === 0) return [];
+  const [headers, ...rows] = parsed;
   const map = headerMap(headers);
 
+  const has = (key: string) => typeof map[key] === 'number';
+  // Require LinkedIn-shaped headers, otherwise let the generic parser take over.
+  if (!has('first name') && !has('last name') && !has('name')) return [];
+
   return rows
-    .map((row) => ({
-      name: row[map['first name']] && row[map['last name']]
-        ? `${row[map['first name']]} ${row[map['last name']]}`.trim()
-        : row[map['name']] || '',
-      headline: row[map['headline']] || '',
-      company: row[map['company']] || row[map['position']] || '',
-      linkedinUrl: row[map['profile url']] || row[map['url']] || '',
-      photoUrl: row[map['image url']] || '',
-      notes: row[map['notes']] || '',
-    }))
+    .map((row) => {
+      const first = has('first name') ? row[map['first name']] : '';
+      const last = has('last name') ? row[map['last name']] : '';
+      const fullName = first || last ? `${first || ''} ${last || ''}`.trim() : (has('name') ? row[map['name']] : '');
+      return {
+        name: fullName || '',
+        // LinkedIn export uses "Position" for the job title; "Headline" only
+        // exists in some exports. Prefer headline, fall back to position.
+        headline: (has('headline') ? row[map['headline']] : '') || (has('position') ? row[map['position']] : '') || '',
+        company: (has('company') ? row[map['company']] : '') || '',
+        linkedinUrl: (has('url') ? row[map['url']] : '') || (has('profile url') ? row[map['profile url']] : '') || '',
+        // Connections.csv has no image url; older exports may include one.
+        photoUrl: (has('image url') ? row[map['image url']] : '') || '',
+        notes: (has('notes') ? row[map['notes']] : '') || '',
+      };
+    })
     .filter((person) => person.name);
 }
 
 export function parseGenericCsv(text: string): CsvPersonRow[] {
-  const [headers, ...rows] = parseCsv(text);
+  const parsed = parseCsv(text);
+  if (parsed.length === 0) return [];
+  const [headers, ...rows] = parsed;
   const map = headerMap(headers);
   const pick = (row: string[], keys: string[], fallback = '') => {
     for (const key of keys) {
@@ -46,9 +107,9 @@ export function parseGenericCsv(text: string): CsvPersonRow[] {
   return rows
     .map((row) => ({
       name: pick(row, ['name', 'full name', 'person']),
-      headline: pick(row, ['headline', 'title', 'role']),
+      headline: pick(row, ['headline', 'title', 'role', 'position']),
       company: pick(row, ['company', 'organization']),
-      linkedinUrl: pick(row, ['linkedin', 'linkedin url', 'profile url']),
+      linkedinUrl: pick(row, ['linkedin', 'linkedin url', 'profile url', 'url']),
       photoUrl: pick(row, ['photo', 'photo url', 'image', 'image url']),
       notes: pick(row, ['notes', 'note']),
     }))
