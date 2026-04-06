@@ -1,148 +1,155 @@
 import type { CsvPersonRow } from '../types';
 
-// Real face photos sourced from Wikimedia Commons (public-domain or CC-licensed
-// official portraits). Using remote URLs avoids shipping binary assets and
-// guarantees recognizable faces. The Review UI applies object-cover with a
-// face-biased object-position to get a tight head/face crop.
+// Real face photos sourced from Wikimedia Commons. We use the
+// `Special:FilePath` redirect endpoint with a `width` query, which is the
+// documented hotlink-friendly way to fetch images from Commons. It always
+// resolves to the latest version and is more reliable than hashed thumbnail
+// URLs (which can rot). The Review UI applies object-cover with a face-biased
+// object-position to get a tight head/face crop.
+const COMMONS = 'https://commons.wikimedia.org/wiki/Special:FilePath/';
+function commons(filename: string): string {
+  return `${COMMONS}${encodeURIComponent(filename)}?width=480`;
+}
+
 export const starterPeople: CsvPersonRow[] = [
   {
     name: 'Satya Nadella',
     headline: 'Chairman and CEO',
     company: 'Microsoft',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/35/Satya_Nadella_in_2023_%28cropped%29.jpg/480px-Satya_Nadella_in_2023_%28cropped%29.jpg',
+    photoUrl: commons('Satya_Nadella_in_2023_(cropped).jpg'),
     notes: 'Public-company leadership and AI platform strategy.',
   },
   {
     name: 'Taylor Swift',
     headline: 'Singer-songwriter and producer',
     company: 'Entertainment',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b5/191125_Taylor_Swift_at_the_2019_American_Music_Awards_%28cropped%29.png/480px-191125_Taylor_Swift_at_the_2019_American_Music_Awards_%28cropped%29.png',
+    photoUrl: commons('191125_Taylor_Swift_at_the_2019_American_Music_Awards_(cropped).png'),
     notes: 'Global touring artist with major fan engagement and brand partnerships.',
   },
   {
     name: 'Simone Biles',
     headline: 'Olympic gymnast',
     company: 'Team USA',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Simone_Biles_at_the_2016_Olympics_all-around_gold_medal_podium_%2828262782114%29_%28cropped%29.jpg/480px-Simone_Biles_at_the_2016_Olympics_all-around_gold_medal_podium_%2828262782114%29_%28cropped%29.jpg',
+    photoUrl: commons('Simone_Biles_at_the_2016_Olympics_all-around_gold_medal_podium_(28262782114)_(cropped).jpg'),
     notes: 'Decorated gymnast and mental-health advocate.',
   },
   {
     name: 'Jensen Huang',
     headline: 'President and CEO',
     company: 'NVIDIA',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Jensen_Huang_2024_%28cropped%29.jpg/480px-Jensen_Huang_2024_%28cropped%29.jpg',
+    photoUrl: commons('Jensen_Huang_2024_(cropped).jpg'),
     notes: 'Known for GPU and AI infrastructure leadership.',
   },
   {
     name: 'Serena Williams',
     headline: 'Former world No. 1 tennis player',
     company: 'Serena Ventures',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/Serena_Williams_at_2013_US_Open_%28cropped%29.jpg/480px-Serena_Williams_at_2013_US_Open_%28cropped%29.jpg',
+    photoUrl: commons('Serena_Williams_at_2013_US_Open_(cropped).jpg'),
     notes: 'Athlete and entrepreneur in beauty and venture investing.',
   },
   {
     name: 'Volodymyr Zelenskyy',
     headline: 'President',
     company: 'Ukraine',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Volodymyr_Zelensky_Official_portrait_%28cropped%29.jpg/480px-Volodymyr_Zelensky_Official_portrait_%28cropped%29.jpg',
+    photoUrl: commons('Volodymyr_Zelensky_Official_portrait_(cropped).jpg'),
     notes: 'Head of state and frequent international diplomacy figure.',
   },
   {
     name: 'Tim Cook',
     headline: 'Chief Executive Officer',
     company: 'Apple',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Tim_Cook_2009_cropped.jpg/480px-Tim_Cook_2009_cropped.jpg',
+    photoUrl: commons('Tim_Cook_2009_cropped.jpg'),
     notes: 'Leads Apple product ecosystem and operations strategy.',
   },
   {
     name: 'Megan Rapinoe',
     headline: 'Former professional soccer player',
     company: 'USWNT',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/01/Megan_Rapinoe_2019_%28cropped%29.jpg/480px-Megan_Rapinoe_2019_%28cropped%29.jpg',
+    photoUrl: commons('Megan_Rapinoe_2019_(cropped).jpg'),
     notes: 'World Cup winner and equality advocate.',
   },
   {
     name: 'Barack Obama',
     headline: '44th President of the United States',
     company: 'Obama Foundation',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/President_Barack_Obama.jpg/480px-President_Barack_Obama.jpg',
+    photoUrl: commons('President_Barack_Obama.jpg'),
     notes: 'Former US president and author.',
   },
   {
     name: 'Oprah Winfrey',
     headline: 'Media executive and philanthropist',
     company: 'OWN',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/bf/Oprah_in_2014.jpg/480px-Oprah_in_2014.jpg',
+    photoUrl: commons('Oprah_in_2014.jpg'),
     notes: 'Talk show host, producer, and media mogul.',
   },
   {
     name: 'Elon Musk',
     headline: 'CEO',
     company: 'Tesla, SpaceX',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Elon_Musk_Royal_Society_%28crop2%29.jpg/480px-Elon_Musk_Royal_Society_%28crop2%29.jpg',
+    photoUrl: commons('Elon_Musk_Royal_Society_(crop2).jpg'),
     notes: 'Entrepreneur in EVs, space, and AI.',
   },
   {
     name: 'Beyoncé',
     headline: 'Singer and producer',
     company: 'Parkwood Entertainment',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/19/Beyonce_-_The_Formation_World_Tour%2C_at_Wembley_Stadium_in_London%2C_England.jpg/480px-Beyonce_-_The_Formation_World_Tour%2C_at_Wembley_Stadium_in_London%2C_England.jpg',
+    photoUrl: commons('Beyonce_-_The_Formation_World_Tour,_at_Wembley_Stadium_in_London,_England.jpg'),
     notes: 'Grammy-winning artist and businesswoman.',
   },
   {
     name: 'LeBron James',
     headline: 'Professional basketball player',
     company: 'Los Angeles Lakers',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/06/LeBron_James_%2851959977144%29_%28cropped2%29.jpg/480px-LeBron_James_%2851959977144%29_%28cropped2%29.jpg',
+    photoUrl: commons('LeBron_James_(51959977144)_(cropped2).jpg'),
     notes: 'NBA superstar and entrepreneur.',
   },
   {
     name: 'Keanu Reeves',
     headline: 'Actor',
     company: 'Hollywood',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/0c/Reeves_at_2019_Comic_Con_%28cropped%29.jpg/480px-Reeves_at_2019_Comic_Con_%28cropped%29.jpg',
+    photoUrl: commons('Reeves_at_2019_Comic_Con_(cropped).jpg'),
     notes: 'Actor known for The Matrix and John Wick.',
   },
   {
     name: 'Greta Thunberg',
     headline: 'Climate activist',
     company: 'Fridays for Future',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/49/Greta_Thunberg_urges_MEPs_to_show_climate_leadership_%2849618310531%29_%28cropped%29.jpg/480px-Greta_Thunberg_urges_MEPs_to_show_climate_leadership_%2849618310531%29_%28cropped%29.jpg',
+    photoUrl: commons('Greta_Thunberg_urges_MEPs_to_show_climate_leadership_(49618310531)_(cropped).jpg'),
     notes: 'Swedish environmental activist.',
   },
   {
     name: 'Rihanna',
     headline: 'Singer and entrepreneur',
     company: 'Fenty',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/5/5b/Rihanna_Fenty_2018.png/480px-Rihanna_Fenty_2018.png',
+    photoUrl: commons('Rihanna_Fenty_2018.png'),
     notes: 'Recording artist and founder of Fenty Beauty.',
   },
   {
     name: 'Cristiano Ronaldo',
     headline: 'Professional footballer',
     company: 'Al Nassr',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/8c/Cristiano_Ronaldo_2018.jpg/480px-Cristiano_Ronaldo_2018.jpg',
+    photoUrl: commons('Cristiano_Ronaldo_2018.jpg'),
     notes: 'Portuguese forward, multi Ballon d\u2019Or winner.',
   },
   {
     name: 'Lionel Messi',
     headline: 'Professional footballer',
     company: 'Inter Miami',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Lionel_Messi_20180626.jpg/480px-Lionel_Messi_20180626.jpg',
+    photoUrl: commons('Lionel_Messi_20180626.jpg'),
     notes: 'Argentine forward, World Cup winner.',
   },
   {
     name: 'Angela Merkel',
     headline: 'Former Chancellor',
     company: 'Germany',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Angela_Merkel._Tallinn_Digital_Summit.jpg/480px-Angela_Merkel._Tallinn_Digital_Summit.jpg',
+    photoUrl: commons('Angela_Merkel._Tallinn_Digital_Summit.jpg'),
     notes: 'Long-serving German chancellor.',
   },
   {
     name: 'Bill Gates',
     headline: 'Co-founder',
     company: 'Microsoft / Gates Foundation',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Bill_Gates_2017_%28cropped%29.jpg/480px-Bill_Gates_2017_%28cropped%29.jpg',
+    photoUrl: commons('Bill_Gates_2017_(cropped).jpg'),
     notes: 'Microsoft co-founder and philanthropist.',
   },
 ];

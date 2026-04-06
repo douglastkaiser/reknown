@@ -38,21 +38,21 @@ export function FaceToNameCard({
     );
   }
 
+  // Defensive: this card is only generated for people with photos, so if a
+  // photo is somehow missing, render nothing rather than a broken prompt.
+  if (!photoUrl) return null;
+
   return (
     <section className="card space-y-4 md:space-y-0 md:p-8">
       <div className="flex flex-col gap-6 md:flex-row md:items-center md:gap-10">
         <div className="flex flex-1 flex-col items-center gap-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted">Who is this person?</p>
-          {photoUrl ? (
-            <img
-              src={photoUrl}
-              alt="Person to identify"
-              className="h-56 w-56 rounded-2xl object-cover shadow-lg md:h-72 md:w-72 lg:h-80 lg:w-80"
-              style={{ objectPosition: 'center 25%' }}
-            />
-          ) : (
-            <p className="text-sm text-muted">No photo available.</p>
-          )}
+          <img
+            src={photoUrl}
+            alt="Person to identify"
+            className="h-56 w-56 rounded-2xl object-cover shadow-lg md:h-72 md:w-72 lg:h-80 lg:w-80"
+            style={{ objectPosition: 'center 25%' }}
+          />
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 space-y-3 md:max-w-sm">

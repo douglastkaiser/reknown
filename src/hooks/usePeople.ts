@@ -1,26 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Person } from '../types';
 import { createPerson, deletePerson, listPeople, seedPeople, updatePerson } from '../lib/storage';
+import { useAuth } from '../contexts/AuthContext';
 
 export function usePeople() {
+  const { scope } = useAuth();
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
-  const seededOnStartupRef = useRef(false);
 
   const refresh = useCallback(async () => {
+    if (!scope) {
+      setPeople([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
 
     let nextPeople = await listPeople();
-    if (!seededOnStartupRef.current && nextPeople.length === 0) {
+    if (scope === 'guest' && nextPeople.length === 0) {
       const { starterPeople } = await import('../lib/starter-people');
       await seedPeople(starterPeople.map((row) => ({ ...row, tags: [] })));
-      seededOnStartupRef.current = true;
       nextPeople = await listPeople();
     }
 
     setPeople(nextPeople);
     setLoading(false);
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     void refresh();

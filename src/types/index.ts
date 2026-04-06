@@ -3,6 +3,8 @@ export type CardType = 'name_to_face' | 'face_to_name';
 export interface Person {
   id: string;
   name: string;
+  nicknames?: string[];
+  scope?: string;
   similarity?: {
     normalizedDescriptors?: string[];
     clusterIds?: string[];
@@ -50,7 +52,8 @@ export interface SessionStats {
 }
 
 export interface AppStats {
-  id: 'app';
+  id: string;
+  scope?: string;
   totalCards: number;
   dueCards: number;
   matureCards: number;
@@ -64,6 +67,7 @@ export type ReviewMode = 'typed_guess' | 'multiple_choice';
 
 export interface ReviewEvent {
   id: number;
+  scope?: string;
   cardId: string;
   cardType: CardType;
   outcome: ReviewOutcome;
@@ -74,6 +78,7 @@ export interface ReviewEvent {
 
 export interface SessionSummary {
   id: string;
+  scope?: string;
   correct: number;
   incorrect: number;
   accuracy: number;
