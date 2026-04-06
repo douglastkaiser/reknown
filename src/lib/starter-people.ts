@@ -1,3 +1,11 @@
+import satyaNadellaPhotoUrl from '../assets/starter-people/satya-nadella.svg';
+import taylorSwiftPhotoUrl from '../assets/starter-people/taylor-swift.svg';
+import simoneBilesPhotoUrl from '../assets/starter-people/simone-biles.svg';
+import jensenHuangPhotoUrl from '../assets/starter-people/jensen-huang.svg';
+import serenaWilliamsPhotoUrl from '../assets/starter-people/serena-williams.svg';
+import volodymyrZelenskyyPhotoUrl from '../assets/starter-people/volodymyr-zelenskyy.svg';
+import timCookPhotoUrl from '../assets/starter-people/tim-cook.svg';
+import meganRapinoePhotoUrl from '../assets/starter-people/megan-rapinoe.svg';
 import type { CsvPersonRow } from '../types';
 
 export const starterPeople: CsvPersonRow[] = [
@@ -5,52 +13,56 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Satya Nadella',
     headline: 'Chairman and CEO',
     company: 'Microsoft',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/6/63/Satya_Nadella_2023.jpg',
+    photoUrl: satyaNadellaPhotoUrl,
     notes: 'Public-company leadership and AI platform strategy.',
   },
   {
     name: 'Taylor Swift',
     headline: 'Singer-songwriter and producer',
     company: 'Entertainment',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/f/f2/Taylor_Swift_The_Eras_Tour.png',
+    photoUrl: taylorSwiftPhotoUrl,
     notes: 'Global touring artist with major fan engagement and brand partnerships.',
   },
   {
     name: 'Simone Biles',
     headline: 'Olympic gymnast',
     company: 'Team USA',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/2/28/Simone_Biles_2016.jpg',
+    photoUrl: simoneBilesPhotoUrl,
     notes: 'Decorated gymnast and mental-health advocate.',
   },
   {
     name: 'Jensen Huang',
     headline: 'President and CEO',
     company: 'NVIDIA',
+    photoUrl: jensenHuangPhotoUrl,
     notes: 'Known for GPU and AI infrastructure leadership.',
   },
   {
     name: 'Serena Williams',
     headline: 'Former world No. 1 tennis player',
     company: 'Wyn Beauty / Serena Ventures',
+    photoUrl: serenaWilliamsPhotoUrl,
     notes: 'Athlete and entrepreneur in beauty and venture investing.',
   },
   {
     name: 'Volodymyr Zelenskyy',
     headline: 'President',
     company: 'Ukraine',
+    photoUrl: volodymyrZelenskyyPhotoUrl,
     notes: 'Head of state and frequent international diplomacy figure.',
   },
   {
     name: 'Tim Cook',
     headline: 'Chief Executive Officer',
     company: 'Apple',
-    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/f/fa/Tim_Cook_%28cropped%29.jpg',
+    photoUrl: timCookPhotoUrl,
     notes: 'Leads Apple product ecosystem and operations strategy.',
   },
   {
     name: 'Megan Rapinoe',
     headline: 'Former professional soccer player',
     company: 'USWNT',
+    photoUrl: meganRapinoePhotoUrl,
     notes: 'World Cup winner and equality advocate.',
   },
 ];
