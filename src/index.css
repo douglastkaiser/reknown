@@ -34,7 +34,7 @@
   }
 
   .card {
-    @apply rounded-2xl border border-border bg-surface/80 p-4 shadow-soft backdrop-blur;
+    @apply rounded-2xl border border-border bg-surface p-4 shadow-soft;
   }
 
   .nav-link {
@@ -48,6 +48,6 @@
 
 @layer utilities {
   .pt-safe-top {
-    padding-top: max(env(safe-area-inset-top), 1rem);
+    padding-top: max(env(safe-area-inset-top, 0px), 1rem);
   }
 }

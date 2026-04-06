@@ -19,13 +19,9 @@ const DEFAULT_SETTINGS: Settings = {
   queueCap: 30,
   maturityThreshold: 21,
   facerOptionCount: 4,
-  facerHardOptionCount: 8,
-  hardModeEnabled: false,
   cardTypeWeights: {
     name_to_face: 4,
     face_to_name: 4,
-    headline: 2,
-    company: 2,
   },
   installPromptDismissedAt: null,
   updatedAt: Date.now(),
@@ -204,24 +200,14 @@ export async function seedPeople(records: Array<Omit<Person, 'id' | 'createdAt' 
 
 export function makeReviewCard(person: Person, type: ReviewCard['type']): ReviewCard {
   const now = Date.now();
-  const promptByType: Record<ReviewCard['type'], string> = {
-    name_to_face: `Who is ${person.name}?`,
-    face_to_name: 'Name this person.',
-    headline: `What is ${person.name}'s headline?`,
-    company: `Where does ${person.name} work?`,
-  };
-  const answerByType: Record<ReviewCard['type'], string> = {
-    name_to_face: person.photoDataUrl || person.photoUrl || 'No photo yet',
-    face_to_name: person.name,
-    headline: person.headline || 'No headline available',
-    company: person.company || 'No company available',
-  };
+  const prompt = type === 'face_to_name' ? 'Name this person.' : `Who is ${person.name}?`;
+  const answer = type === 'face_to_name' ? person.name : (person.photoDataUrl || person.photoUrl || 'No photo yet');
   return {
     id: `${person.id}:${type}`,
     personId: person.id,
     type,
-    prompt: promptByType[type],
-    answer: answerByType[type],
+    prompt,
+    answer,
     srs: { interval: 0, repetitions: 0, easeFactor: 2.5, dueAt: now, lastReviewedAt: null },
     createdAt: now,
     updatedAt: now,
@@ -268,9 +254,7 @@ export async function getReviewMetrics(now: number = Date.now()): Promise<Review
   return {
     overall: summarizeAccuracy(events),
     faceToName: summarizeAccuracy(events.filter((event) => event.cardType === 'face_to_name')),
-    facerMultipleChoice: summarizeAccuracy(
-      events.filter((event) => event.cardType === 'face_to_name' && event.mode === 'multiple_choice')
-    ),
+    nameToFace: summarizeAccuracy(events.filter((event) => event.cardType === 'name_to_face')),
     trend7d: summarizeAccuracy(events.filter((event) => event.timestamp >= sevenDayCutoff)),
     trend30d: summarizeAccuracy(events.filter((event) => event.timestamp >= thirtyDayCutoff)),
   };
