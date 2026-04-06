@@ -26,12 +26,11 @@ function withBase(basePath: string, path: string): string {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const base = normalizeBasePath(env.VITE_BASE_PATH ?? '/reknown/');
-  const outDir = env.VITE_OUT_DIR?.trim() || 'dist';
 
   return {
     base,
     build: {
-      outDir,
+      outDir: 'dist',
     },
     plugins: [
       react(),
