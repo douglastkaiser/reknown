@@ -5,6 +5,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Satya Nadella',
     headline: 'Chairman and CEO',
     company: 'Microsoft',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/7/78/MS-Exec-Nadella-Satya-2017-08-31-22_%28cropped%29.jpg',
     notes: 'Public-company leadership and AI platform strategy.',
   },
   {
@@ -17,18 +18,21 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Simone Biles',
     headline: 'Olympic gymnast',
     company: 'Team USA',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTvY_DMgUZWT4JWmjLI_AEqLBrSRw9rHaS-Yg&s',
     notes: 'Decorated gymnast and mental-health advocate.',
   },
   {
     name: 'Jensen Huang',
     headline: 'President and CEO',
     company: 'NVIDIA',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcT_-hy_tR1o4Y2Rh1mnZbu7ETiYoFAXaOmAMM_HQxIPgZcMUt6DSDZYi5OMAd53ToXmn7ldzIJ9IM34JBZDR7KCCNVCQQekYibVX10k5A&s=10',
     notes: 'Known for GPU and AI infrastructure leadership.',
   },
   {
     name: 'Serena Williams',
     headline: 'Former world No. 1 tennis player',
     company: 'Serena Ventures',
+    photoUrl: 'https://hips.hearstapps.com/hmg-prod/images/c4825140-616c-4721-988f-15ee8809bc16.jpeg?crop=0.586xw:0.879xh;0.221xw,0.039xh&resize=640:*',
     notes: 'Athlete and entrepreneur in beauty and venture investing.',
   },
   {
@@ -47,6 +51,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Megan Rapinoe',
     headline: 'Former professional soccer player',
     company: 'USWNT',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/b/b7/Megan_Rapinoe_%2848675274817%29_%28cropped%29.jpg',
     notes: 'World Cup winner and equality advocate.',
   },
   {
@@ -63,15 +68,10 @@ export const starterPeople: CsvPersonRow[] = [
     notes: 'Talk show host, producer, and media mogul.',
   },
   {
-    name: 'Elon Musk',
-    headline: 'CEO',
-    company: 'Tesla, SpaceX',
-    notes: 'Entrepreneur in EVs, space, and AI.',
-  },
-  {
     name: 'Beyoncé',
     headline: 'Singer and producer',
     company: 'Parkwood Entertainment',
+    photoUrl: 'https://cdn.britannica.com/59/204159-050-5055F2A9/Beyonce-2013.jpg',
     notes: 'Grammy-winning artist and businesswoman.',
   },
   {
@@ -84,13 +84,8 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Keanu Reeves',
     headline: 'Actor',
     company: 'Hollywood',
+    photoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b4/Keanu_Reeves_at_TIFF_2025_02_%28Cropped%29.jpg/960px-Keanu_Reeves_at_TIFF_2025_02_%28Cropped%29.jpg',
     notes: 'Actor known for The Matrix and John Wick.',
-  },
-  {
-    name: 'Greta Thunberg',
-    headline: 'Climate activist',
-    company: 'Fridays for Future',
-    notes: 'Swedish environmental activist.',
   },
   {
     name: 'Rihanna',
@@ -109,6 +104,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Lionel Messi',
     headline: 'Professional footballer',
     company: 'Inter Miami',
+    photoUrl: 'https://a.espncdn.com/combiner/i?img=/i/headshots/soccer/players/full/45843.png&w=350&h=254',
     notes: 'Argentine forward, World Cup winner.',
   },
   {
