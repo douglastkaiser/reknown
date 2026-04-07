@@ -3,13 +3,15 @@ import type { CsvPersonRow } from '../types';
 // Real face photos sourced from Wikimedia Commons via the upload.wikimedia.org
 // CDN, which serves thumbnails directly and (unlike commons.wikimedia.org)
 // allows hotlinking. The path is deterministic:
-//   /wikipedia/commons/thumb/<h[0]>/<h[0:2]>/<File>/480px-<File>
+//   /wikipedia/commons/thumb/<h[0]>/<h[0:2]>/<File>/640px-<File>
+// The width must be a standard "bucket" (120, 240, 320, 640, 800, 1024, ...);
+// arbitrary widths like 480 are rejected by the CDN per w.wiki/GHai.
 // where <h> is the md5 hex of the filename (with underscores, not spaces).
 // We precompute <h[0:2]> for each starter so the browser doesn't need crypto.
 const UPLOAD = 'https://upload.wikimedia.org/wikipedia/commons/thumb';
 function commons(hash2: string, filename: string): string {
   const encoded = encodeURIComponent(filename);
-  return `${UPLOAD}/${hash2[0]}/${hash2}/${encoded}/480px-${encoded}`;
+  return `${UPLOAD}/${hash2[0]}/${hash2}/${encoded}/640px-${encoded}`;
 }
 
 export const starterPeople: CsvPersonRow[] = [
