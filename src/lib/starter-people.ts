@@ -12,6 +12,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Taylor Swift',
     headline: 'Singer-songwriter and producer',
     company: 'Entertainment',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTR-LfUPeSBR9HAM_2qpUB5ddQHvqwXGznWZQ&s',
     notes: 'Global touring artist with major fan engagement and brand partnerships.',
   },
   {
@@ -39,12 +40,14 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Volodymyr Zelenskyy',
     headline: 'President',
     company: 'Ukraine',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQh0ZbERNVMj0brdJXyfvVUYxDvPwaIybEbdg&s',
     notes: 'Head of state and frequent international diplomacy figure.',
   },
   {
     name: 'Tim Cook',
     headline: 'Chief Executive Officer',
     company: 'Apple',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQwTXiAs9A9SNGXOf3TDY8Et9kf9YueN4wi-w&s',
     notes: 'Leads Apple product ecosystem and operations strategy.',
   },
   {
@@ -65,6 +68,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Oprah Winfrey',
     headline: 'Media executive and philanthropist',
     company: 'OWN',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRkqoAUOxOT4oi5u_o6EO3WRgIL_tdmGQ1l_A&s',
     notes: 'Talk show host, producer, and media mogul.',
   },
   {
@@ -78,6 +82,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'LeBron James',
     headline: 'Professional basketball player',
     company: 'Los Angeles Lakers',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSbhGiz3-q4H4mnswKCrCpYDbTrm7c_GYGNyA&s',
     notes: 'NBA superstar and entrepreneur.',
   },
   {
@@ -98,6 +103,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Cristiano Ronaldo',
     headline: 'Professional footballer',
     company: 'Al Nassr',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQtlRMUoPOu7n-TwWYfCEOLwPCYCd2c_BOTeg&s',
     notes: 'Portuguese forward, multi Ballon d\u2019Or winner.',
   },
   {
@@ -118,6 +124,7 @@ export const starterPeople: CsvPersonRow[] = [
     name: 'Bill Gates',
     headline: 'Co-founder',
     company: 'Microsoft / Gates Foundation',
+    photoUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS236M6oW5Y-7yU_enkngePAvNzmyJKNf5wNQ&s',
     notes: 'Microsoft co-founder and philanthropist.',
   },
 ];
