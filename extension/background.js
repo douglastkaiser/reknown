@@ -3,6 +3,32 @@
 
 const browserApi = globalThis.browser || globalThis.chrome;
 
+// Keep-alive ports: while any are open, Firefox will not unload the
+// non-persistent event page. The content script opens one per batch and
+// closes it on REKNOWN_ENRICH_COMPLETE. Without this, runBatch's in-flight
+// fetches and timers get torn down ~30-60s after the last tracked extension
+// API event, killing batches mid-run.
+const keepAliveConnections = new Map(); // requestId -> Set<Port>
+
+browserApi.runtime.onConnect.addListener((port) => {
+  if (!port.name || !port.name.startsWith('reknown-enrich-batch:')) return;
+  const requestId = port.name.slice('reknown-enrich-batch:'.length);
+  let set = keepAliveConnections.get(requestId);
+  if (!set) {
+    set = new Set();
+    keepAliveConnections.set(requestId, set);
+  }
+  set.add(port);
+  port.onDisconnect.addListener(() => {
+    void browserApi.runtime.lastError;
+    set.delete(port);
+    if (set.size === 0) keepAliveConnections.delete(requestId);
+    // If the tab closed mid-batch, cancel cleanly so we stop hammering LinkedIn.
+    const batch = activeBatches.get(requestId);
+    if (batch) batch.cancelled = true;
+  });
+});
+
 const LINKEDIN_PROFILE_RE = /^https:\/\/(www\.)?linkedin\.com\/in\/[^\s?#]+/i;
 const DEFAULT_AVATAR_MARKERS = ['ghost-person', 'ghosts/person', 'default-avatar', 'anon-user'];
 const PER_REQUEST_MIN_MS = 2000;
@@ -314,6 +340,15 @@ async function runBatch(requestId, people, tabId) {
     });
   } finally {
     activeBatches.delete(requestId);
+    // Defensively close any keep-alive ports still open for this batch, in
+    // case the content-script-side close raced the COMPLETE message.
+    const set = keepAliveConnections.get(requestId);
+    if (set) {
+      for (const p of set) {
+        try { p.disconnect(); } catch { /* ignore */ }
+      }
+      keepAliveConnections.delete(requestId);
+    }
   }
 }
 
