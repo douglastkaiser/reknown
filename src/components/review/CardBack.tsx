@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import type { Person } from '../../types';
 import { Button } from '../common/Button';
 
@@ -11,6 +12,14 @@ export function CardBack({
   onContinue: () => void;
 }) {
   const photoUrl = person.photoDataUrl || person.photoUrl;
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') onContinue();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onContinue]);
 
   return (
     <div className="space-y-4">
