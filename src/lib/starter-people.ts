@@ -1,17 +1,25 @@
 import type { CsvPersonRow } from '../types';
 
-// Real face photos sourced from Wikimedia Commons via the upload.wikimedia.org
-// CDN, which serves thumbnails directly and (unlike commons.wikimedia.org)
-// allows hotlinking. The path is deterministic:
-//   /wikipedia/commons/thumb/<h[0]>/<h[0:2]>/<File>/640px-<File>
-// The width must be a standard "bucket" (120, 240, 320, 640, 800, 1024, ...);
-// arbitrary widths like 480 are rejected by the CDN per w.wiki/GHai.
+// Real face photos sourced from Wikimedia Commons. We previously tried to
+// hotlink Wikimedia's own thumbnails at upload.wikimedia.org/wikipedia/commons/
+// thumb/.../640px-<File>, but Wikimedia's thumbnailer rejects many widths on a
+// per-file basis ("Use thumbnail steps listed on https://w.wiki/GHai"), which
+// kept breaking the guest-mode starter set.
+//
+// Instead we point at the full-size original file on upload.wikimedia.org
+// (which has no thumbnail-rule restrictions and is always hotlinkable) and
+// pipe it through the free images.weserv.nl image proxy, which downsizes it
+// to 640px wide JPEG for the browser. This avoids both the thumbnail-bucket
+// problem and shipping multi-MB originals.
+//
+//   https://images.weserv.nl/?url=upload.wikimedia.org/wikipedia/commons/<h[0]>/<h[0:2]>/<File>&w=640&output=jpg
+//
 // where <h> is the md5 hex of the filename (with underscores, not spaces).
 // We precompute <h[0:2]> for each starter so the browser doesn't need crypto.
-const UPLOAD = 'https://upload.wikimedia.org/wikipedia/commons/thumb';
 function commons(hash2: string, filename: string): string {
   const encoded = encodeURIComponent(filename);
-  return `${UPLOAD}/${hash2[0]}/${hash2}/${encoded}/640px-${encoded}`;
+  const source = `upload.wikimedia.org/wikipedia/commons/${hash2[0]}/${hash2}/${encoded}`;
+  return `https://images.weserv.nl/?url=${source}&w=640&output=jpg`;
 }
 
 export const starterPeople: CsvPersonRow[] = [
