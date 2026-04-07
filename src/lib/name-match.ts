@@ -191,7 +191,7 @@ export function matchHumanNameGuess(guess: string, target: string): NameMatchRes
 
   if (
     hasMissingSurname &&
-    firstTokenScore >= PARTIAL_TOKEN_THRESHOLD &&
+    (firstTokenScore >= PARTIAL_TOKEN_THRESHOLD || lastTokenScore >= PARTIAL_TOKEN_THRESHOLD) &&
     overlap >= PARTIAL_TOKEN_THRESHOLD
   ) {
     return {

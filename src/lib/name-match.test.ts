@@ -31,6 +31,14 @@ describe('matchHumanNameGuess', () => {
     expect(result.verdict).toBe('almost');
   });
 
+  it('accepts surname-only guess', () => {
+    const result = matchHumanNameGuess('Messi', 'Lionel Messi');
+
+    expect(result.accepted).toBe(true);
+    expect(result.reason).toBe('partial-high-confidence');
+    expect(result.verdict).toBe('almost');
+  });
+
   it('handles initials and punctuation as acceptable guesses', () => {
     const result = matchHumanNameGuess('J. R. R. Tolkien', 'John Ronald Reuel Tolkien');
 
