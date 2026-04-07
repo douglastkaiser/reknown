@@ -22,7 +22,9 @@
       "matches": [
         "http://localhost/*",
         "http://127.0.0.1/*",
-        "https://douglastkaiser.github.io/*"
+        "https://douglastkaiser.github.io/*",
+        "https://douglastkaiser.com/*",
+        "https://www.douglastkaiser.com/*"
       ],
       "js": ["content-script.js"],
       "run_at": "document_idle"

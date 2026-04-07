@@ -9,6 +9,7 @@
     /^http:\/\/localhost(:\d+)?$/,
     /^http:\/\/127\.0\.0\.1(:\d+)?$/,
     /^https:\/\/douglastkaiser\.github\.io$/,
+    /^https:\/\/(www\.)?douglastkaiser\.com$/,
   ];
 
   function isAllowedOrigin(origin) {
