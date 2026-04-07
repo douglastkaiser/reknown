@@ -73,7 +73,7 @@ interface ReknownDB extends DBSchema {
 }
 
 const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
-  upgrade(db, oldVersion) {
+  upgrade(db, oldVersion, _newVersion, tx) {
     if (oldVersion < 1) {
       const people = db.createObjectStore('people', { keyPath: 'id' });
       people.createIndex('by-updatedAt', 'updatedAt');
@@ -96,7 +96,8 @@ const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
     if (oldVersion < 3) {
       // Per-user data scoping was introduced. Legacy rows have no scope and
       // could leak across users on this device, so clear them on upgrade.
-      const tx = db.transaction(['people', 'stats', 'reviewEvents', 'sessionSummaries'], 'readwrite');
+      // Use the version-change transaction provided by idb; opening a new
+      // transaction here would conflict with the upgrade tx and abort requests.
       void tx.objectStore('people').clear();
       void tx.objectStore('stats').clear();
       void tx.objectStore('reviewEvents').clear();

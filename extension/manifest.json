@@ -3,6 +3,12 @@
   "name": "reknown — LinkedIn Photo Enricher",
   "version": "1.0.0",
   "description": "Fetches LinkedIn profile photos for your reknown face-recall deck",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "reknown-linkedin-enricher@douglastkaiser.github.io",
+      "strict_min_version": "78.0"
+    }
+  },
   "permissions": [
     "activeTab",
     "*://*.linkedin.com/*"
@@ -13,7 +19,6 @@
   },
   "content_scripts": [
     {
-      "//": "Add any additional reknown origins here (e.g. a custom deployment). Also update ALLOWED_ORIGINS in content-script.js and background.js.",
       "matches": [
         "http://localhost/*",
         "http://127.0.0.1/*",
