@@ -11,6 +11,7 @@ export function PeopleForm({ onSave }: { onSave: (input: Omit<Person, 'id' | 'cr
   const [company, setCompany] = useState('');
   const [photoDataUrl, setPhotoDataUrl] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
+  const [linkedinUrl, setLinkedinUrl] = useState('');
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -22,6 +23,7 @@ export function PeopleForm({ onSave }: { onSave: (input: Omit<Person, 'id' | 'cr
       company,
       photoDataUrl: photoDataUrl || undefined,
       photoUrl: photoUrl.trim() || undefined,
+      linkedinUrl: linkedinUrl.trim() || undefined,
       tags: [],
     });
     setName('');
@@ -30,6 +32,7 @@ export function PeopleForm({ onSave }: { onSave: (input: Omit<Person, 'id' | 'cr
     setCompany('');
     setPhotoDataUrl('');
     setPhotoUrl('');
+    setLinkedinUrl('');
   }
 
   return (
@@ -44,6 +47,13 @@ export function PeopleForm({ onSave }: { onSave: (input: Omit<Person, 'id' | 'cr
         placeholder="Photo URL (link to an image)"
         value={photoUrl}
         onChange={(e) => setPhotoUrl(e.target.value)}
+      />
+      <input
+        type="url"
+        className="w-full rounded-lg bg-bg px-3 py-2"
+        placeholder="LinkedIn URL (e.g. https://www.linkedin.com/in/…)"
+        value={linkedinUrl}
+        onChange={(e) => setLinkedinUrl(e.target.value)}
       />
       <PhotoUpload value={photoDataUrl} onChange={setPhotoDataUrl} />
       <Button type="submit">Add person</Button>

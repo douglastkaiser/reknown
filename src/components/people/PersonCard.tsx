@@ -23,6 +23,7 @@ export function PersonCard({
   const [editHeadline, setEditHeadline] = useState(person.headline ?? '');
   const [editCompany, setEditCompany] = useState(person.company ?? '');
   const [editPhotoUrl, setEditPhotoUrl] = useState(person.photoUrl ?? '');
+  const [editLinkedinUrl, setEditLinkedinUrl] = useState(person.linkedinUrl ?? '');
 
   function startEdit() {
     setEditName(person.name);
@@ -30,6 +31,7 @@ export function PersonCard({
     setEditHeadline(person.headline ?? '');
     setEditCompany(person.company ?? '');
     setEditPhotoUrl(person.photoUrl ?? '');
+    setEditLinkedinUrl(person.linkedinUrl ?? '');
     setEditing(true);
   }
 
@@ -41,6 +43,7 @@ export function PersonCard({
       headline: editHeadline,
       company: editCompany,
       photoUrl: editPhotoUrl.trim() || undefined,
+      linkedinUrl: editLinkedinUrl.trim() || undefined,
     });
     setEditing(false);
   }
@@ -126,6 +129,13 @@ export function PersonCard({
             placeholder="Photo URL"
             value={editPhotoUrl}
             onChange={(e) => setEditPhotoUrl(e.target.value)}
+          />
+          <input
+            type="url"
+            className="w-full rounded-lg bg-bg px-3 py-2 text-sm"
+            placeholder="LinkedIn URL"
+            value={editLinkedinUrl}
+            onChange={(e) => setEditLinkedinUrl(e.target.value)}
           />
           <Button type="button" onClick={() => void saveEdit()}>Save</Button>
         </div>

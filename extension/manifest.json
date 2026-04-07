@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "reknown — LinkedIn Photo Enricher",
+  "version": "1.0.0",
+  "description": "Fetches LinkedIn profile photos for your reknown face-recall deck",
+  "permissions": [
+    "activeTab",
+    "*://*.linkedin.com/*"
+  ],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "content_scripts": [
+    {
+      "//": "Add any additional reknown origins here (e.g. a custom deployment). Also update ALLOWED_ORIGINS in content-script.js and background.js.",
+      "matches": [
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*",
+        "https://douglastkaiser.github.io/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  }
+}
