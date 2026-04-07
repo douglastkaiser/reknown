@@ -26,7 +26,7 @@ const DEFAULT_SETTINGS: Settings = {
   newCardsWhenQueueSmall: 8,
   queueCap: 30,
   maturityThreshold: 21,
-  facerOptionCount: 4,
+  facerOptionCount: 8,
   cardTypeWeights: {
     name_to_face: 4,
     face_to_name: 4,

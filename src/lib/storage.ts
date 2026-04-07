@@ -37,7 +37,7 @@ const DEFAULT_SETTINGS: Settings = {
   newCardsWhenQueueSmall: 8,
   queueCap: 30,
   maturityThreshold: 21,
-  facerOptionCount: 4,
+  facerOptionCount: 8,
   cardTypeWeights: {
     name_to_face: 4,
     face_to_name: 4,
@@ -306,6 +306,37 @@ export async function recordSessionSummary(
   await db.add('sessionSummaries', fullSummary);
   emitMetricsUpdatedEvent();
   return fullSummary;
+}
+
+export interface PersonMetric {
+  faceToNameCorrect: number;
+  faceToNameIncorrect: number;
+  nameToFaceCorrect: number;
+  nameToFaceIncorrect: number;
+}
+
+export async function getPerPersonMetrics(): Promise<Record<string, PersonMetric>> {
+  const db = await dbPromise;
+  const events = inScope(await db.getAllFromIndex('reviewEvents', 'by-timestamp'));
+  const result: Record<string, PersonMetric> = {};
+  for (const event of events) {
+    const personId = event.cardId.split(':')[0];
+    if (!personId) continue;
+    const row = result[personId] ?? {
+      faceToNameCorrect: 0,
+      faceToNameIncorrect: 0,
+      nameToFaceCorrect: 0,
+      nameToFaceIncorrect: 0,
+    };
+    const accepted = event.outcome === 'accepted';
+    if (event.cardType === 'face_to_name') {
+      if (accepted) row.faceToNameCorrect += 1; else row.faceToNameIncorrect += 1;
+    } else {
+      if (accepted) row.nameToFaceCorrect += 1; else row.nameToFaceIncorrect += 1;
+    }
+    result[personId] = row;
+  }
+  return result;
 }
 
 export async function getReviewMetrics(now: number = Date.now()): Promise<ReviewMetrics> {

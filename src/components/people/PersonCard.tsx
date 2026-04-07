@@ -3,15 +3,18 @@ import type { Person } from '../../types';
 import { Button } from '../common/Button';
 import { googleImageSearchUrl, urlToData } from '../../lib/image';
 import { capitalizeName, parseNicknames } from '../../lib/text';
+import type { PersonMetric } from '../../lib/storage';
 
 export function PersonCard({
   person,
   onDelete,
   onUpdate,
+  metric,
 }: {
   person: Person;
   onDelete: (id: string) => void;
   onUpdate?: (id: string, updates: Partial<Person>) => Promise<void> | void;
+  metric?: PersonMetric;
 }) {
   const photo = person.photoDataUrl || person.photoUrl;
   const [pasteUrl, setPasteUrl] = useState('');
@@ -96,6 +99,23 @@ export function PersonCard({
           <Button className="bg-red-400/20" onClick={() => onDelete(person.id)}>Delete</Button>
         </div>
       </div>
+
+      {metric && (metric.faceToNameCorrect + metric.faceToNameIncorrect + metric.nameToFaceCorrect + metric.nameToFaceIncorrect) > 0 ? (
+        <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted">
+          <span className="rounded-full border border-border px-2 py-0.5">
+            Name misses: <span className="font-semibold text-red-400">{metric.faceToNameIncorrect}</span>
+          </span>
+          <span className="rounded-full border border-border px-2 py-0.5">
+            Face misses: <span className="font-semibold text-red-400">{metric.nameToFaceIncorrect}</span>
+          </span>
+          <span className="rounded-full border border-border px-2 py-0.5">
+            Name correct: <span className="font-semibold text-green-400">{metric.faceToNameCorrect}</span>
+          </span>
+          <span className="rounded-full border border-border px-2 py-0.5">
+            Face correct: <span className="font-semibold text-green-400">{metric.nameToFaceCorrect}</span>
+          </span>
+        </div>
+      ) : null}
 
       {editing && onUpdate ? (
         <div className="mt-3 space-y-2 rounded-xl border border-border bg-bg/50 p-3">
