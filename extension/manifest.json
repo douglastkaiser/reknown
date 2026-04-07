@@ -15,8 +15,8 @@
     {
       "//": "Add any additional reknown origins here (e.g. a custom deployment). Also update ALLOWED_ORIGINS in content-script.js and background.js.",
       "matches": [
-        "http://localhost:*/*",
-        "http://127.0.0.1:*/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
         "https://douglastkaiser.github.io/*"
       ],
       "js": ["content-script.js"],

@@ -21,10 +21,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const scope = user ? `u:${user.uid}` : isGuest ? 'guest' : null;
-
-  useEffect(() => {
-    setActiveScope(scope);
-  }, [scope]);
+  // Keep the storage layer's active scope in sync synchronously so that
+  // child effects (e.g. usePeople's refresh) observe the correct scope on
+  // the same render — a useEffect here would fire after child effects and
+  // cause listPeople/createPerson to run with a null scope.
+  setActiveScope(scope);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
