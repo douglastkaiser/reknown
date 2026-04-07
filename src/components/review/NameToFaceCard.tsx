@@ -37,21 +37,24 @@ export function NameToFaceCard({
   }
 
   return (
-    <section className="card space-y-4">
-      <p className="text-center text-xs font-medium uppercase tracking-wider text-muted">Select the correct face</p>
-      <h3 className="text-center text-2xl font-bold text-text">{person.name}</h3>
+    <section className="card flex flex-col gap-6 md:p-8">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 py-6">
+        <p className="text-center text-xs font-medium uppercase tracking-wider text-muted">Select the correct face</p>
+        <h3 className="text-center text-3xl font-bold text-text md:text-4xl">{person.name}</h3>
+      </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-8 gap-2">
         {(card.options ?? []).map((photoUrl, index) => (!photoUrl ? null :
           <button
             key={`${card.id}:${index}`}
             onClick={() => handleChoice(index)}
-            className="overflow-hidden rounded-xl border-2 border-border transition hover:border-accent/50 focus:outline-none"
+            className="overflow-hidden rounded-lg border-2 border-border transition hover:border-accent/50 focus:outline-none"
           >
             <img
               src={photoUrl}
               alt={`Option ${index + 1}`}
               className="aspect-square w-full object-cover"
+              style={{ objectPosition: 'center 25%' }}
             />
           </button>
         ))}
