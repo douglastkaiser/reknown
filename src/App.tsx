@@ -28,18 +28,35 @@ function useAppSettings() {
 function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople> }) {
   const [rows, setRows] = useState<CsvPersonRow[]>([]);
   const [showImport, setShowImport] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [importError, setImportError] = useState<string | null>(null);
 
   const onText = (text: string) => {
     const normalized = parseLinkedInCsv(text);
     setRows(normalized.length ? normalized : parseGenericCsv(text));
+    setImportError(null);
   };
 
   const onImport = async () => {
-    const { seedPeople } = await import('./lib/storage');
-    await seedPeople(rows.map((row) => ({ ...row, tags: [] })));
-    await peopleState.refresh();
-    setRows([]);
-    setShowImport(false);
+    setImporting(true);
+    setImportError(null);
+    setProgress({ done: 0, total: rows.length });
+    try {
+      const { seedPeople } = await import('./lib/storage');
+      await seedPeople(
+        rows.map((row) => ({ ...row, tags: [] })),
+        (done, total) => setProgress({ done, total }),
+      );
+      await peopleState.refresh();
+      setRows([]);
+      setShowImport(false);
+    } catch (err) {
+      console.error('CSV import failed', err);
+      setImportError(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setImporting(false);
+    }
   };
 
   return (
@@ -59,7 +76,15 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
         <div className="space-y-3">
           <CsvUpload onText={onText} />
           <CsvPaste onText={onText} />
-          {rows.length ? <ImportPreview rows={rows} onConfirm={() => void onImport()} /> : null}
+          {rows.length ? (
+            <ImportPreview
+              rows={rows}
+              onConfirm={() => void onImport()}
+              importing={importing}
+              progress={progress}
+              error={importError}
+            />
+          ) : null}
         </div>
       ) : null}
 

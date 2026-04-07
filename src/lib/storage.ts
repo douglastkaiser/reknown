@@ -246,10 +246,14 @@ export async function exportJson(): Promise<string> {
   }, null, 2);
 }
 
-export async function seedPeople(records: Array<Omit<Person, 'id' | 'createdAt' | 'updatedAt'>>): Promise<Person[]> {
+export async function seedPeople(
+  records: Array<Omit<Person, 'id' | 'createdAt' | 'updatedAt'>>,
+  onProgress?: (done: number, total: number) => void,
+): Promise<Person[]> {
   const created: Person[] = [];
-  for (const record of records) {
-    created.push(await createPerson(record));
+  for (let i = 0; i < records.length; i++) {
+    created.push(await createPerson(records[i]));
+    onProgress?.(i + 1, records.length);
   }
   return created;
 }
