@@ -1,0 +1,51 @@
+name: Build extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'extension/**'
+      - '.github/workflows/extension.yml'
+  pull_request:
+    paths:
+      - 'extension/**'
+      - '.github/workflows/extension.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Package browser extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from manifest
+        id: version
+        run: |
+          VERSION=$(node -p "require('./extension/manifest.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create Chrome-style ZIP (unpacked folder, zipped)
+        run: |
+          mkdir -p dist
+          cd extension
+          zip -r "../dist/reknown-extension-chrome-${{ steps.version.outputs.version }}.zip" . -x "*.DS_Store"
+
+      - name: Create Firefox XPI (same contents, .xpi extension)
+        run: |
+          cd extension
+          zip -r "../dist/reknown-extension-firefox-${{ steps.version.outputs.version }}.xpi" . -x "*.DS_Store"
+
+      - name: Upload Chrome ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reknown-extension-chrome
+          path: dist/reknown-extension-chrome-*.zip
+          if-no-files-found: error
+
+      - name: Upload Firefox XPI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reknown-extension-firefox
+          path: dist/reknown-extension-firefox-*.xpi
+          if-no-files-found: error

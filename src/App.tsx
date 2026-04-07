@@ -4,6 +4,7 @@ import { AppShell } from './components/layout/AppShell';
 import { LoginPage } from './components/auth/LoginPage';
 import { PeopleForm } from './components/people/PeopleForm';
 import { PeopleList } from './components/people/PeopleList';
+import { EnrichPhotosPanel } from './components/people/EnrichPhotosPanel';
 import { ReviewSessionFlow } from './components/review/ReviewSessionFlow';
 import { CsvUpload } from './components/import/CsvUpload';
 import { CsvPaste } from './components/import/CsvPaste';
@@ -87,6 +88,11 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
           ) : null}
         </div>
       ) : null}
+
+      <EnrichPhotosPanel
+        people={peopleState.people}
+        onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
+      />
 
       <PeopleList
         people={peopleState.people}
