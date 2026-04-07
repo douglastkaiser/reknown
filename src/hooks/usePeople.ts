@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Person } from '../types';
-import { createPerson, deletePerson, listPeople, seedPeople, updatePerson } from '../lib/storage';
+import { createPerson, deletePerson, listPeople, updatePerson } from '../lib/storage';
 import { useAuth } from '../contexts/AuthContext';
 
 export function usePeople() {
@@ -16,12 +16,7 @@ export function usePeople() {
     }
     setLoading(true);
 
-    let nextPeople = await listPeople();
-    if (scope === 'guest' && nextPeople.length === 0) {
-      const { starterPeople } = await import('../lib/starter-people');
-      await seedPeople(starterPeople.map((row) => ({ ...row, tags: [] })));
-      nextPeople = await listPeople();
-    }
+    const nextPeople = await listPeople();
 
     setPeople(nextPeople);
     setLoading(false);

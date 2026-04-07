@@ -5,6 +5,7 @@ export function LoginPage() {
   const { signInWithGoogle, continueAsGuest } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  const [loadingGuest, setLoadingGuest] = useState(false);
 
   async function handleGoogleSignIn() {
     setError(null);
@@ -15,6 +16,18 @@ export function LoginPage() {
       setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.');
     } finally {
       setSigningIn(false);
+    }
+  }
+
+  async function handleContinueAsGuest() {
+    setError(null);
+    setLoadingGuest(true);
+    try {
+      await continueAsGuest();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load sample data. Please try again.');
+    } finally {
+      setLoadingGuest(false);
     }
   }
 
@@ -34,7 +47,7 @@ export function LoginPage() {
         <div className="space-y-3">
           <button
             onClick={handleGoogleSignIn}
-            disabled={signingIn}
+            disabled={signingIn || loadingGuest}
             className="flex w-full items-center justify-center gap-3 rounded-xl border border-border bg-white px-4 py-3 text-sm font-medium text-gray-800 transition hover:bg-gray-100 disabled:opacity-50"
           >
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -47,10 +60,11 @@ export function LoginPage() {
           </button>
 
           <button
-            onClick={continueAsGuest}
-            className="w-full rounded-xl border border-border bg-surface/80 px-4 py-3 text-sm font-medium text-muted transition hover:bg-surface hover:text-text"
+            onClick={handleContinueAsGuest}
+            disabled={loadingGuest || signingIn}
+            className="w-full rounded-xl border border-border bg-surface/80 px-4 py-3 text-sm font-medium text-muted transition hover:bg-surface hover:text-text disabled:opacity-50"
           >
-            Continue as Guest
+            {loadingGuest ? 'Loading sample people...' : 'Continue as Guest'}
           </button>
         </div>
 

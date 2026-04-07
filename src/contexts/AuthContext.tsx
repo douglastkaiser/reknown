@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
-import { clearScope, setActiveScope } from '../lib/storage';
+import { clearScope, listPeople, seedPeople, setActiveScope } from '../lib/storage';
 
 interface AuthState {
   user: User | null;
@@ -9,7 +9,7 @@ interface AuthState {
   loading: boolean;
   scope: string | null;
   signInWithGoogle: () => Promise<void>;
-  continueAsGuest: () => void;
+  continueAsGuest: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -45,7 +45,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signInWithPopup(auth, googleProvider);
   }
 
-  function continueAsGuest() {
+  async function continueAsGuest() {
+    // Seed BEFORE flipping React state so the storage layer's scope cannot
+    // be clobbered by an interleaved render and any failure surfaces here
+    // instead of being swallowed by usePeople's fire-and-forget refresh.
+    setActiveScope('guest');
+    const existing = await listPeople();
+    if (existing.length === 0) {
+      const { starterPeople } = await import('../lib/starter-people');
+      await seedPeople(starterPeople.map((row) => ({ ...row, tags: [] })));
+    }
     setIsGuest(true);
   }
 
