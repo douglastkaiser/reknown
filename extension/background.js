@@ -13,6 +13,7 @@ const keepAliveConnections = new Map(); // requestId -> Set<Port>
 browserApi.runtime.onConnect.addListener((port) => {
   if (!port.name || !port.name.startsWith('reknown-enrich-batch:')) return;
   const requestId = port.name.slice('reknown-enrich-batch:'.length);
+  console.log('[reknown-ext] keep-alive port connected name=' + port.name);
   let set = keepAliveConnections.get(requestId);
   if (!set) {
     set = new Set();
@@ -256,12 +257,22 @@ async function enrichOne(person) {
 async function runBatch(requestId, people, tabId) {
   const batch = { cancelled: false };
   activeBatches.set(requestId, batch);
+  console.log(
+    '[reknown-ext] runBatch start requestId=' + requestId,
+    'count=' + people.length,
+    'tabId=' + tabId,
+  );
   let success = 0;
   let failed = 0;
   try {
     for (let i = 0; i < people.length; i++) {
       if (batch.cancelled) break;
       const person = people[i];
+      console.log(
+        '[reknown-ext] enriching',
+        i + 1 + '/' + people.length,
+        'name=' + (person && person.name),
+      );
       sendToTab(tabId, {
         type: 'REKNOWN_ENRICH_PROGRESS',
         requestId,
@@ -278,6 +289,10 @@ async function runBatch(requestId, people, tabId) {
         console.error('[reknown-ext] unexpected error', err);
         result = { status: 'error', error: 'fetch_failed' };
       }
+      console.log(
+        '[reknown-ext] enrichOne result status=' + (result && result.status),
+        'error=' + (result && result.error),
+      );
       if (batch.cancelled) break;
       if (result.status === 'success') {
         success++;
@@ -304,6 +319,12 @@ async function runBatch(requestId, people, tabId) {
           total: people.length,
         });
         if (result.fatal) {
+          console.log(
+            '[reknown-ext] runBatch fatal-abort requestId=' + requestId,
+            'reason=' + result.error,
+            'success=' + success,
+            'failed=' + failed,
+          );
           sendToTab(tabId, {
             type: 'REKNOWN_ENRICH_COMPLETE',
             requestId,
@@ -332,6 +353,12 @@ async function runBatch(requestId, people, tabId) {
         }
       }
     }
+    console.log(
+      '[reknown-ext] runBatch complete requestId=' + requestId,
+      'success=' + success,
+      'failed=' + failed,
+      'aborted=' + batch.cancelled,
+    );
     sendToTab(tabId, {
       type: 'REKNOWN_ENRICH_COMPLETE',
       requestId,
@@ -355,8 +382,20 @@ async function runBatch(requestId, people, tabId) {
 browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
   const tabId = sender && sender.tab && sender.tab.id;
+  if (typeof msg.type === 'string' && msg.type.startsWith('REKNOWN_')) {
+    console.log(
+      '[reknown-ext] background received',
+      msg.type,
+      'requestId=' + (msg.requestId || ''),
+      'tabId=' + tabId,
+      'people=' + (Array.isArray(msg.people) ? msg.people.length : 0),
+    );
+  }
   if (msg.type === 'REKNOWN_ENRICH_REQUEST') {
-    if (typeof tabId !== 'number') return;
+    if (typeof tabId !== 'number') {
+      console.warn('[reknown-ext] REKNOWN_ENRICH_REQUEST ignored: no tabId on sender');
+      return;
+    }
     const people = Array.isArray(msg.people) ? msg.people : [];
     const requestId = String(msg.requestId || Date.now());
     runBatch(requestId, people, tabId).catch((err) => {

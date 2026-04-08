@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import type { Person } from '../../types';
 import { Button } from '../common/Button';
 import { useExtensionDetection } from '../../hooks/useExtensionDetection';
@@ -40,11 +40,41 @@ export function EnrichPhotosPanel({
     () => people.filter((p) => p.linkedinUrl && !p.photoDataUrl && !p.photoUrl),
     [people],
   );
+  const withLinkedinUrl = useMemo(
+    () => people.filter((p) => !!p.linkedinUrl).length,
+    [people],
+  );
+  const alreadyHavePhoto = useMemo(
+    () => people.filter((p) => !!p.photoDataUrl || !!p.photoUrl).length,
+    [people],
+  );
+
+  const debugStatus = (
+    <p className="rounded bg-bg/50 px-2 py-1 text-[10px] font-mono text-muted">
+      [Debug] extensionAvailable={String(extensionAvailable)} total={people.length}{' '}
+      withLinkedinUrl={withLinkedinUrl} alreadyHavePhoto={alreadyHavePhoto}{' '}
+      eligible={eligible.length} isRunning={String(enrichment.isRunning)}{' '}
+      origin={typeof window !== 'undefined' ? window.location.origin : ''}
+    </p>
+  );
+
+  useEffect(() => {
+    console.log(
+      '[reknown] EnrichPhotosPanel mounted extensionAvailable=' + extensionAvailable,
+      'total=' + people.length,
+      'withLinkedinUrl=' + withLinkedinUrl,
+      'alreadyHavePhoto=' + alreadyHavePhoto,
+      'eligible=' + eligible.length,
+    );
+    // Intentionally only on mount and when extensionAvailable flips.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extensionAvailable]);
 
   if (!extensionAvailable) {
     return (
       <div className="card space-y-2">
         <h3 className="font-semibold">Enrich Photos from LinkedIn</h3>
+        {debugStatus}
         <p className="text-sm text-muted">
           Install the reknown browser extension to automatically fetch LinkedIn
           profile photos for your connections using your own logged-in session.
@@ -91,8 +121,55 @@ export function EnrichPhotosPanel({
     enrichment.startEnrichment(retryPeople);
   }
 
+  function handleEnrichClick() {
+    console.log(
+      '[reknown] Enrich click: extensionAvailable=' + extensionAvailable,
+      'total=' + people.length,
+      'withLinkedinUrl=' + withLinkedinUrl,
+      'alreadyHavePhoto=' + alreadyHavePhoto,
+      'eligible=' + eligible.length,
+      'isRunning=' + isRunning,
+    );
+    if (!extensionAvailable) {
+      window.alert(
+        'Enrich blocked: reknown extension not detected on this page.\n\n' +
+          'Make sure the extension is loaded in Firefox (about:debugging) and hard-refresh this tab (Ctrl+Shift+R).',
+      );
+      return;
+    }
+    if (isRunning) {
+      window.alert('Enrich blocked: an enrichment batch is already running.');
+      return;
+    }
+    if (eligible.length === 0) {
+      let reason: string;
+      if (withLinkedinUrl === 0) {
+        reason = 'No people have a LinkedIn URL. Add LinkedIn URLs first.';
+      } else if (alreadyHavePhoto >= withLinkedinUrl) {
+        reason = 'Everyone with a LinkedIn URL already has a photo.';
+      } else {
+        reason = 'No eligible people to enrich.';
+      }
+      window.alert(
+        'Enrich blocked: ' +
+          reason +
+          '\n\n[Debug] total=' +
+          people.length +
+          ' withLinkedinUrl=' +
+          withLinkedinUrl +
+          ' alreadyHavePhoto=' +
+          alreadyHavePhoto +
+          ' eligible=' +
+          eligible.length,
+      );
+      return;
+    }
+    enrichment.startEnrichment(eligible);
+  }
+
   return (
     <div className="card space-y-3">
+      {debugStatus}
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold">Enrich Photos from LinkedIn</h3>
@@ -104,8 +181,8 @@ export function EnrichPhotosPanel({
         {!isRunning ? (
           <Button
             type="button"
-            disabled={eligible.length === 0}
-            onClick={() => enrichment.startEnrichment(eligible)}
+            className={eligible.length === 0 ? 'opacity-50' : ''}
+            onClick={handleEnrichClick}
           >
             Enrich {eligible.length > 0 ? `(${eligible.length})` : ''}
           </Button>
