@@ -68,9 +68,23 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
           }
         | null;
       if (!data || !data.type) return;
+      if (!data.type.startsWith('REKNOWN_ENRICH_')) return;
       if (data.requestId && requestIdRef.current && data.requestId !== requestIdRef.current) {
+        console.log(
+          '[reknown] ignored',
+          data.type,
+          'requestId mismatch got=' + data.requestId,
+          'expected=' + requestIdRef.current,
+        );
         return;
       }
+      console.log(
+        '[reknown] received',
+        data.type,
+        'status=' + (data.status || ''),
+        'personId=' + (data.personId || ''),
+        'personName=' + (data.personName || ''),
+      );
       if (data.type === 'REKNOWN_ENRICH_PROGRESS') {
         if (data.status === 'started') {
           setProgress((p) => ({ ...p, currentPerson: data.personName ?? null }));
@@ -108,6 +122,11 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         }
       }
       if (data.type === 'REKNOWN_ENRICH_COMPLETE') {
+        console.log(
+          '[reknown] ENRICH_COMPLETE aborted=' + !!data.aborted,
+          'reason=' + (data.reason || ''),
+          'summary=' + JSON.stringify(data.summary || {}),
+        );
         setIsRunning(false);
         setCompleted(true);
         if (data.aborted) {
@@ -121,10 +140,15 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
   }, []);
 
   const startEnrichment = useCallback((people: Person[]) => {
+    console.log('[reknown] startEnrichment called with', people.length, 'people');
     const eligible = people
       .filter((p) => p.linkedinUrl && !p.photoDataUrl && !p.photoUrl)
       .map((p) => ({ id: p.id, name: p.name, linkedinUrl: p.linkedinUrl! }));
-    if (eligible.length === 0) return;
+    console.log('[reknown] startEnrichment eligible after filter=' + eligible.length);
+    if (eligible.length === 0) {
+      console.warn('[reknown] startEnrichment: 0 eligible people, aborting');
+      return;
+    }
     const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     requestIdRef.current = requestId;
     setIsRunning(true);
@@ -138,10 +162,16 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
       failed: 0,
       currentPerson: null,
     });
+    console.log(
+      '[reknown] startEnrichment posting REKNOWN_ENRICH_REQUEST requestId=' + requestId,
+      'count=' + eligible.length,
+      'origin=' + window.location.origin,
+    );
     window.postMessage(
       { type: 'REKNOWN_ENRICH_REQUEST', requestId, people: eligible },
       window.location.origin,
     );
+    console.log('[reknown] startEnrichment postMessage returned');
   }, []);
 
   const cancelEnrichment = useCallback(() => {
