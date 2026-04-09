@@ -40,6 +40,7 @@ const PER_REQUEST_JITTER_MS = 2000;
 const BATCH_SIZE = 25;
 const BATCH_PAUSE_MS = 30000;
 const MAX_PHOTO_DIM = 400;
+const DEBUG_VERBOSE = true;
 
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
@@ -141,7 +142,17 @@ function extractFromLicdnRegex(html) {
   // rejects the fetch). After decoding, the char class still needs to
   // exclude `\` to stop at JS string-literal escapes in <script>-embedded
   // JSON, where quotes are backslash-escaped instead of HTML-entity-escaped.
-  const decoded = decodeHtml(html);
+  //
+  // Additionally, <script>-embedded JSON may use JS unicode escapes like
+  // \u0026 for &, \" for ", and \/ for /. We normalize these BEFORE the
+  // HTML-entity decode so that signed query strings (&v=beta&t=<hmac>)
+  // survive intact rather than being truncated at the first backslash.
+  const jsNormalized = html
+    .replace(/\\u0026/g, '&')
+    .replace(/\\u003d/g, '=')
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/');
+  const decoded = decodeHtml(jsNormalized);
   const URL_BODY = '[^"\'\\s<>\\\\]';
 
   // Prefer the avatar URL explicitly. LinkedIn's preload JSON lists the
@@ -151,7 +162,20 @@ function extractFromLicdnRegex(html) {
     'https://media\\.licdn\\.com/dms/image/' + URL_BODY + '*profile-displayphoto-shrink' + URL_BODY + '*',
   );
   const photoMatch = decoded.match(photoRe);
-  if (photoMatch) return photoMatch[0];
+  if (photoMatch) {
+    const url = photoMatch[0];
+    // Sanity check: a valid signed licdn URL should be >100 chars and
+    // contain the signature params. Warn (but still return) if truncated.
+    if (DEBUG_VERBOSE && (url.length < 100 || !url.includes('&v='))) {
+      console.warn(
+        '[reknown-ext] licdn-regex: URL looks truncated len=' + url.length,
+        'hasV=' + url.includes('&v='),
+        'hasT=' + url.includes('&t='),
+        'url=' + url,
+      );
+    }
+    return url;
+  }
 
   // Fallback: any licdn image URL, but explicitly skip background banners.
   const genericRe = new RegExp('https://media\\.licdn\\.com/dms/image/' + URL_BODY + '+');
@@ -184,16 +208,31 @@ function extractPhotoUrl(html) {
     ['profile-img', extractFromProfileImg],
     ['licdn-regex', extractFromLicdnRegex],
   ];
+  const outcomes = [];
   for (const [name, fn] of strategies) {
     try {
       const url = fn(html);
       if (url && !isDefaultAvatar(url)) {
         console.log('[reknown-ext] photo extracted via', name);
+        if (DEBUG_VERBOSE) {
+          outcomes.push({ strategy: name, result: 'MATCH', urlPrefix: url.substring(0, 80), len: url.length });
+          console.log('[reknown-ext] strategy outcomes:', JSON.stringify(outcomes));
+        }
         return url;
+      }
+      // Record why this strategy didn't win.
+      if (!url) {
+        outcomes.push({ strategy: name, result: 'null' });
+      } else if (isDefaultAvatar(url)) {
+        outcomes.push({ strategy: name, result: 'default-avatar', urlPrefix: url.substring(0, 80) });
       }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
+      outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100) });
     }
+  }
+  if (DEBUG_VERBOSE) {
+    console.log('[reknown-ext] all strategies failed, outcomes:', JSON.stringify(outcomes));
   }
   return null;
 }
@@ -251,23 +290,77 @@ async function enrichOne(person) {
   } catch {
     return { status: 'error', error: 'fetch_failed' };
   }
+  if (DEBUG_VERBOSE) {
+    const markers = {
+      jsonLdPerson: html.includes('"@type":"Person"') || html.includes('"@type": "Person"'),
+      ogImage: /property=["']og:image["']/i.test(html),
+      displayPhoto: html.includes('profile-displayphoto-shrink'),
+      authwall: /authwall|checkpoint/i.test(html),
+      pvTopCard: html.includes('pv-top-card'),
+      bprGuid: html.includes('bpr-guid'),
+    };
+    console.log(
+      '[reknown-ext] page fetched status=' + pageRes.status,
+      'finalUrl=' + (pageRes.url || '').substring(0, 120),
+      'htmlLen=' + html.length,
+      'contentType=' + (pageRes.headers.get('content-type') || ''),
+      'markers=' + JSON.stringify(markers),
+    );
+  }
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     return { status: 'error', error: 'login_wall', fatal: true };
   }
   const photoUrl = extractPhotoUrl(html);
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] extractPhotoUrl result:',
+      photoUrl ? ('url=' + photoUrl) : 'null',
+      'len=' + (photoUrl ? photoUrl.length : 0),
+      'hasSignature=' + (photoUrl ? (photoUrl.includes('&v=') && photoUrl.includes('&t=')) : false),
+      'endsWithBackslash=' + (photoUrl ? photoUrl.endsWith('\\') : false),
+    );
+  }
   if (!photoUrl) {
     return { status: 'error', error: 'no_photo_found' };
   }
   if (isDefaultAvatar(photoUrl)) {
     return { status: 'error', error: 'default_avatar' };
   }
+  if (DEBUG_VERBOSE) {
+    console.log('[reknown-ext] fetching photo url=' + photoUrl);
+  }
   let imgRes;
   try {
-    imgRes = await fetch(photoUrl);
-  } catch {
+    imgRes = await fetch(photoUrl, {
+      credentials: 'include',
+      referrer: 'https://www.linkedin.com/',
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    });
+  } catch (err) {
+    if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo fetch threw', String(err));
     return { status: 'error', error: 'fetch_failed' };
   }
+  if (DEBUG_VERBOSE) {
+    const hdrs = {};
+    for (const key of ['content-type', 'content-length', 'server', 'x-li-fabric', 'x-li-pop', 'x-cache', 'cf-ray']) {
+      const v = imgRes.headers.get(key);
+      if (v) hdrs[key] = v;
+    }
+    console.log(
+      '[reknown-ext] photo fetch response status=' + imgRes.status,
+      'statusText=' + imgRes.statusText,
+      'type=' + imgRes.type,
+      'url=' + (imgRes.url || '').substring(0, 120),
+      'headers=' + JSON.stringify(hdrs),
+    );
+  }
   if (!imgRes.ok) {
+    if (DEBUG_VERBOSE) {
+      try {
+        const errBody = await imgRes.text();
+        console.warn('[reknown-ext] photo fetch error body (first 300):', errBody.substring(0, 300));
+      } catch { /* ignore body read failure */ }
+    }
     return { status: 'error', error: 'fetch_failed' };
   }
   let blob;
@@ -291,6 +384,8 @@ async function runBatch(requestId, people, tabId) {
     '[reknown-ext] runBatch start requestId=' + requestId,
     'count=' + people.length,
     'tabId=' + tabId,
+    'ext=' + EXT_VERSION,
+    'DEBUG_VERBOSE=' + DEBUG_VERBOSE,
   );
   let success = 0;
   let failed = 0;
