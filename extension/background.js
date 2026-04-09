@@ -3,6 +3,9 @@
 
 const browserApi = globalThis.browser || globalThis.chrome;
 
+// Single source of truth for the extension version: the manifest.
+const EXT_VERSION = browserApi.runtime.getManifest().version;
+
 // Keep-alive ports: while any are open, Firefox will not unload the
 // non-persistent event page. The content script opens one per batch and
 // closes it on REKNOWN_ENRICH_COMPLETE. Without this, runBatch's in-flight
@@ -128,8 +131,35 @@ function extractFromProfileImg(html) {
 }
 
 function extractFromLicdnRegex(html) {
-  const m = html.match(/https:\/\/media\.licdn\.com\/dms\/image\/[^"'\s<>]+/);
-  return m ? decodeHtml(m[0]) : null;
+  // LinkedIn embeds preload JSON inside <code> elements with HTML-entity-
+  // escaped delimiters. The original implementation matched before decoding,
+  // using a char class that excluded raw `"` but not `&`, so the regex ran
+  // past `&quot;` and gobbled JSON structure (`...profile-displaybackground
+  // image-shrink_","$type":"com.linkedin...`). We must decode FIRST so that
+  // `&quot;` becomes `"` (a real terminator) and `&amp;` becomes `&` (a valid
+  // character inside the URL's signed query string — required or LinkedIn
+  // rejects the fetch). After decoding, the char class still needs to
+  // exclude `\` to stop at JS string-literal escapes in <script>-embedded
+  // JSON, where quotes are backslash-escaped instead of HTML-entity-escaped.
+  const decoded = decodeHtml(html);
+  const URL_BODY = '[^"\'\\s<>\\\\]';
+
+  // Prefer the avatar URL explicitly. LinkedIn's preload JSON lists the
+  // banner (profile-displaybackgroundimage) *before* the avatar
+  // (profile-displayphoto), so a generic match gets the wrong image.
+  const photoRe = new RegExp(
+    'https://media\\.licdn\\.com/dms/image/' + URL_BODY + '*profile-displayphoto-shrink' + URL_BODY + '*',
+  );
+  const photoMatch = decoded.match(photoRe);
+  if (photoMatch) return photoMatch[0];
+
+  // Fallback: any licdn image URL, but explicitly skip background banners.
+  const genericRe = new RegExp('https://media\\.licdn\\.com/dms/image/' + URL_BODY + '+');
+  const genericMatch = decoded.match(genericRe);
+  if (genericMatch && !/profile-displaybackgroundimage/.test(genericMatch[0])) {
+    return genericMatch[0];
+  }
+  return null;
 }
 
 function decodeHtml(s) {
@@ -412,7 +442,7 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
   if (msg.type === 'REKNOWN_PING') {
-    sendResponse({ ok: true, version: '1.0.0' });
+    sendResponse({ ok: true, version: EXT_VERSION });
     return;
   }
 });

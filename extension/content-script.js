@@ -52,11 +52,15 @@
     keepAlivePorts.delete(requestId);
   }
 
+  // Single source of truth for the extension version: the manifest. Hard-coded
+  // literals here drift from manifest.json silently, so pull it at runtime.
+  const EXT_VERSION = browserApi.runtime.getManifest().version;
+
   // Announce presence to the page.
   function announce() {
-    console.log('[reknown-ext] announcing REKNOWN_EXTENSION_DETECTED v1.0.0');
+    console.log('[reknown-ext] announcing REKNOWN_EXTENSION_DETECTED v' + EXT_VERSION);
     window.postMessage(
-      { type: 'REKNOWN_EXTENSION_DETECTED', version: '1.0.0' },
+      { type: 'REKNOWN_EXTENSION_DETECTED', version: EXT_VERSION },
       window.location.origin,
     );
   }
