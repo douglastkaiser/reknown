@@ -165,14 +165,26 @@ export function PersonCard({
         <div className="mt-3 space-y-2 rounded-xl border border-border bg-bg/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-xs text-muted">Missing photo</span>
-            <a
-              href={googleImageSearchUrl(person.name, person.company)}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs text-accent hover:underline"
-            >
-              Find photo on Google Images →
-            </a>
+            <div className="flex items-center gap-3">
+              <a
+                href={googleImageSearchUrl(person.name, person.company)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-accent hover:underline"
+              >
+                Find photo on Google Images →
+              </a>
+              {person.linkedinUrl?.trim() ? (
+                <a
+                  href={person.linkedinUrl.trim()}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-accent hover:underline"
+                >
+                  Open LinkedIn profile →
+                </a>
+              ) : null}
+            </div>
           </div>
           <div className="flex gap-2">
             <input
