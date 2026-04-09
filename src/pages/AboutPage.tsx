@@ -1,3 +1,5 @@
+import extensionManifest from '../../extension/manifest.json';
+
 export function AboutPage() {
   return (
     <div className="space-y-6">
@@ -59,11 +61,25 @@ export function AboutPage() {
 
       <section className="card space-y-3">
         <h2 className="text-lg font-semibold">Auto-fetch LinkedIn photos (browser extension)</h2>
+
+        <div className="rounded-lg border border-accent/40 bg-accent/5 p-3 text-sm">
+          <p className="font-semibold text-text">Before you install: import your CSV first.</p>
+          <p className="text-muted">
+            This extension <strong>only fills in profile photos</strong> for people already on
+            your Reknown People list. It does <strong>not</strong> scrape your LinkedIn connections
+            — you import those via the "Import from LinkedIn" section above. The workflow is:
+          </p>
+          <ol className="list-decimal space-y-0.5 pl-5 text-muted">
+            <li>Export your LinkedIn connections CSV (see section above).</li>
+            <li>Import it on the People tab.</li>
+            <li>Install this extension.</li>
+            <li>Click <span className="text-text">Enrich</span> — photos appear automatically.</li>
+          </ol>
+        </div>
+
         <p className="text-sm text-muted">
-          Reknown has an optional browser extension that fetches profile photos for your imported
-          LinkedIn connections automatically. It uses <em>your own</em> logged-in LinkedIn session
-          — nothing is sent to any server, no accounts, no API keys. Install it once and a new
-          "Enrich Photos from LinkedIn" button appears on the People tab.
+          The extension uses <em>your own</em> logged-in LinkedIn session — nothing is sent to any
+          server, no accounts, no API keys.
         </p>
 
         <div className="space-y-1">
@@ -139,6 +155,11 @@ export function AboutPage() {
           <h3 className="text-sm font-semibold text-text">Step 3 — Use it</h3>
           <ol className="list-decimal space-y-1 pl-5 text-sm text-muted">
             <li>
+              Make sure you've <strong>already imported your LinkedIn CSV</strong> (see the{' '}
+              <em>Import from LinkedIn</em> section above). The extension only fetches photos for
+              people already on your list — if the People tab shows "No people yet", import first.
+            </li>
+            <li>
               Make sure you're <strong>logged into LinkedIn</strong> in the same browser — open{' '}
               <a
                 href="https://www.linkedin.com/"
@@ -151,9 +172,9 @@ export function AboutPage() {
               in another tab and check.
             </li>
             <li>
-              Refresh this page. Go to the <span className="text-text">People</span> tab. You
-              should see a new section called{' '}
-              <span className="text-text">"Enrich Photos from LinkedIn"</span> at the top.
+              Refresh this page, go to the <span className="text-text">People</span> tab, and the
+              Enrich panel will show <span className="text-text">Enrich (N)</span> with the count
+              of people it can fetch photos for.
             </li>
             <li>
               Click <span className="text-text">Enrich (N)</span> and let it run. Expect roughly 3
@@ -174,6 +195,14 @@ export function AboutPage() {
           </a>
           .
         </p>
+      </section>
+
+      <section className="card space-y-1">
+        <h2 className="text-sm font-semibold text-text">Build info</h2>
+        <p className="font-mono text-xs text-muted">
+          Web: {__GIT_SHA__} · built {__BUILD_TIME__}
+        </p>
+        <p className="font-mono text-xs text-muted">Extension: v{extensionManifest.version}</p>
       </section>
     </div>
   );

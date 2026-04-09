@@ -121,6 +121,13 @@ export function EnrichPhotosPanel({
     enrichment.startEnrichment(retryPeople);
   }
 
+  function scrollToImportCsv() {
+    const el = document.getElementById('import-csv-toggle');
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (el instanceof HTMLElement) el.focus();
+  }
+
   function handleEnrichClick() {
     console.log(
       '[reknown] Enrich click: extensionAvailable=' + extensionAvailable,
@@ -143,8 +150,12 @@ export function EnrichPhotosPanel({
     }
     if (eligible.length === 0) {
       let reason: string;
-      if (withLinkedinUrl === 0) {
-        reason = 'No people have a LinkedIn URL. Add LinkedIn URLs first.';
+      if (people.length === 0) {
+        reason =
+          "No people imported yet. This extension only fills in photos for " +
+          "people already on your list — go to Import CSV above (or the About page for full instructions) first.";
+      } else if (withLinkedinUrl === 0) {
+        reason = 'No imported people have a LinkedIn URL. Add LinkedIn URLs first.';
       } else if (alreadyHavePhoto >= withLinkedinUrl) {
         reason = 'Everyone with a LinkedIn URL already has a photo.';
       } else {
@@ -167,28 +178,41 @@ export function EnrichPhotosPanel({
     enrichment.startEnrichment(eligible);
   }
 
+  const subtitle =
+    people.length === 0
+      ? 'Import your LinkedIn CSV first — this extension fills in profile photos for people already on this list.'
+      : withLinkedinUrl === 0
+      ? 'No imported people have a LinkedIn URL. Edit them to add URLs, then click Enrich.'
+      : `${eligible.length} ${eligible.length === 1 ? 'person has' : 'people have'} a LinkedIn URL but no photo.`;
+
   return (
     <div className="card space-y-3">
       {debugStatus}
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold">Enrich Photos from LinkedIn</h3>
-          <p className="text-xs text-muted">
-            {eligible.length} {eligible.length === 1 ? 'person has' : 'people have'} a
-            LinkedIn URL but no photo.
+          <p className="text-[11px] text-muted/80">
+            Uses your logged-in LinkedIn session to fetch profile photos for people you've
+            already imported. It does not scrape your connections list — you import those via
+            CSV first.
           </p>
+          <p className="text-xs text-muted">{subtitle}</p>
         </div>
-        {!isRunning ? (
+        {isRunning ? (
+          <Button type="button" className="bg-red-400/20" onClick={enrichment.cancelEnrichment}>
+            Stop
+          </Button>
+        ) : people.length === 0 ? (
+          <Button type="button" onClick={scrollToImportCsv}>
+            Import CSV →
+          </Button>
+        ) : (
           <Button
             type="button"
             className={eligible.length === 0 ? 'opacity-50' : ''}
             onClick={handleEnrichClick}
           >
             Enrich {eligible.length > 0 ? `(${eligible.length})` : ''}
-          </Button>
-        ) : (
-          <Button type="button" className="bg-red-400/20" onClick={enrichment.cancelEnrichment}>
-            Stop
           </Button>
         )}
       </div>

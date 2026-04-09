@@ -66,6 +66,7 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
 
       <div className="flex gap-2">
         <button
+          id="import-csv-toggle"
           onClick={() => setShowImport(!showImport)}
           className="rounded-xl border border-border px-3 py-2 text-sm text-muted hover:bg-white/5 hover:text-text"
         >
