@@ -150,6 +150,8 @@ function extractFromLicdnRegex(html) {
   const jsNormalized = html
     .replace(/\\u0026/g, '&')
     .replace(/\\u003d/g, '=')
+    .replace(/\\u003a/g, ':')
+    .replace(/\\u002[fF]/g, '/')
     .replace(/\\"/g, '"')
     .replace(/\\\//g, '/');
   const decoded = decodeHtml(jsNormalized);
@@ -158,30 +160,78 @@ function extractFromLicdnRegex(html) {
   // Prefer the avatar URL explicitly. LinkedIn's preload JSON lists the
   // banner (profile-displaybackgroundimage) *before* the avatar
   // (profile-displayphoto), so a generic match gets the wrong image.
+  //
+  // Use matchAll (global flag) instead of match, because the FIRST
+  // occurrence is often a truncated template/placeholder URL from
+  // LinkedIn's shared JS bundle (same hash for every profile, ~85 chars,
+  // no signature params). The real signed photo URL appears later.
   const photoRe = new RegExp(
     'https://media\\.licdn\\.com/dms/image/' + URL_BODY + '*profile-displayphoto-shrink' + URL_BODY + '*',
+    'g',
   );
-  const photoMatch = decoded.match(photoRe);
-  if (photoMatch) {
-    const url = photoMatch[0];
-    // Sanity check: a valid signed licdn URL should be >100 chars and
-    // contain the signature params. Warn (but still return) if truncated.
-    if (DEBUG_VERBOSE && (url.length < 100 || !url.includes('&v='))) {
-      console.warn(
-        '[reknown-ext] licdn-regex: URL looks truncated len=' + url.length,
-        'hasV=' + url.includes('&v='),
-        'hasT=' + url.includes('&t='),
-        'url=' + url,
+  const allPhotoMatches = [...decoded.matchAll(photoRe)];
+
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] licdn-regex: found ' + allPhotoMatches.length + ' displayphoto URLs',
+      JSON.stringify(allPhotoMatches.map(function (m, i) {
+        return { i: i, len: m[0].length, hasSig: m[0].includes('&v=') && m[0].includes('&t='), url: m[0].substring(0, 90) };
+      })),
+    );
+  }
+
+  // Score each match. A valid signed LinkedIn photo URL is 200+ chars and
+  // contains expiry/signature params (?e=…&v=…&t=…). Template URLs from
+  // LinkedIn's JS bundles are ~85 chars with no query string.
+  var bestPhoto = null;
+  var bestScore = -1;
+  for (var pi = 0; pi < allPhotoMatches.length; pi++) {
+    var candidate = allPhotoMatches[pi][0];
+    var score = 0;
+    if (candidate.length > 100) score += 10;
+    if (candidate.includes('&v=') && candidate.includes('&t=')) score += 10;
+    if (/shrink_\d+_\d+/.test(candidate)) score += 5;
+    if (candidate.includes('?e=')) score += 3;
+    if (score > bestScore) { bestScore = score; bestPhoto = candidate; }
+  }
+
+  if (bestPhoto && bestScore >= 20) {
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] licdn-regex: selected URL score=' + bestScore,
+        'len=' + bestPhoto.length,
+        'url=' + bestPhoto.substring(0, 120),
       );
     }
-    return url;
+    return bestPhoto;
+  }
+
+  // If no URL scored high enough, warn and fall through to the generic
+  // fallback below instead of returning a known-bad truncated URL.
+  if (DEBUG_VERBOSE && allPhotoMatches.length > 0) {
+    console.warn(
+      '[reknown-ext] licdn-regex: all ' + allPhotoMatches.length +
+      ' displayphoto URLs look truncated/invalid, bestScore=' + bestScore,
+      bestPhoto ? ('bestUrl=' + bestPhoto) : '',
+    );
   }
 
   // Fallback: any licdn image URL, but explicitly skip background banners.
-  const genericRe = new RegExp('https://media\\.licdn\\.com/dms/image/' + URL_BODY + '+');
-  const genericMatch = decoded.match(genericRe);
-  if (genericMatch && !/profile-displaybackgroundimage/.test(genericMatch[0])) {
-    return genericMatch[0];
+  // Same matchAll approach — skip truncated/template URLs.
+  const genericRe = new RegExp('https://media\\.licdn\\.com/dms/image/' + URL_BODY + '+', 'g');
+  const allGenericMatches = [...decoded.matchAll(genericRe)];
+  for (var gi = 0; gi < allGenericMatches.length; gi++) {
+    var gUrl = allGenericMatches[gi][0];
+    if (/profile-displaybackgroundimage/.test(gUrl)) continue;
+    if (gUrl.length > 100 && gUrl.includes('&v=')) {
+      if (DEBUG_VERBOSE) {
+        console.log(
+          '[reknown-ext] licdn-regex generic fallback: selected len=' + gUrl.length,
+          'url=' + gUrl.substring(0, 120),
+        );
+      }
+      return gUrl;
+    }
   }
   return null;
 }
