@@ -131,6 +131,168 @@ function extractFromProfileImg(html) {
   return null;
 }
 
+// Shared helper: normalize LinkedIn HTML for URL extraction.
+//
+// LinkedIn embeds JSON inside <code> elements and <script> blocks using a
+// mix of:
+//   1. JS unicode escapes: \u0026 for &, \u003d for =, \u003a for :,
+//      \u002f for /, \u003f for ?
+//   2. Escaped quotes/slashes: \" for ", \/ for /
+//   3. HTML entities: &amp; &quot; &#39; &lt; &gt;
+//
+// We normalize JS escapes FIRST so that signed query strings
+// (?e=...&v=beta&t=<hmac>) survive intact, then decode HTML entities so
+// that `&quot;` becomes a real `"` terminator. Both the licdn-regex and
+// vector-image strategies rely on this identical preprocessing.
+function normalizeLinkedInHtml(html) {
+  const jsNormalized = html
+    .replace(/\\u0026/g, '&')
+    .replace(/\\u003d/g, '=')
+    .replace(/\\u003a/g, ':')
+    .replace(/\\u002[fF]/g, '/')
+    .replace(/\\u003[fF]/g, '?')
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/');
+  return decodeHtml(jsNormalized);
+}
+
+// Extract profile photo URL using LinkedIn's VectorImage pattern.
+//
+// As of ~2026, LinkedIn's embedded preload JSON no longer includes the full
+// signed photo URL as a single string. Instead, profile photos are described
+// via `com.linkedin.common.VectorImage` objects:
+//
+//   "rootUrl": "https://media.licdn.com/dms/image/v2/<id>/profile-displayphoto-shrink_"
+//   "artifacts": [
+//     { "width":100, "height":100,
+//       "fileIdentifyingUrlPathSegment":"100_100/0/<ts>?e=<exp>&v=beta&t=<hmac>" },
+//     { "width":200, "height":200, "fileIdentifyingUrlPathSegment":"200_200/0/..." },
+//     { "width":400, "height":400, "fileIdentifyingUrlPathSegment":"400_400/0/..." },
+//     ...
+//   ]
+//
+// The full photo URL = rootUrl + fileIdentifyingUrlPathSegment. The bare
+// rootUrl (~85 chars) is what licdn-regex matches and rejects as truncated;
+// we need this strategy to construct the real signed URL.
+function extractFromVectorImage(html) {
+  const decoded = normalizeLinkedInHtml(html);
+
+  // Find rootUrl values that point at the profile displayphoto base.
+  // Explicitly excludes profile-displaybackgroundimage-shrink_ (banners)
+  // by requiring `profile-displayphoto-shrink_` verbatim.
+  const rootUrlRe = /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_)"/g;
+  const candidates = [];
+  let rootMatch;
+  let rootUrlCount = 0;
+
+  while ((rootMatch = rootUrlRe.exec(decoded)) !== null) {
+    rootUrlCount++;
+    const rootUrl = rootMatch[1];
+    const afterRoot = rootMatch.index + rootMatch[0].length;
+
+    // The artifacts array for this VectorImage should appear within the
+    // next couple KB. Use a generous window to tolerate reordering.
+    const searchWindow = decoded.substring(afterRoot, afterRoot + 4000);
+
+    const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    let segMatch;
+    let segsForRoot = 0;
+    while ((segMatch = segRe.exec(searchWindow)) !== null) {
+      segsForRoot++;
+      const segment = segMatch[1];
+      const fullUrl = rootUrl + segment;
+      const dimMatch = segment.match(/^(\d+)_(\d+)\//);
+      const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
+      const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
+      const hasSig = fullUrl.includes('&v=') && fullUrl.includes('&t=');
+      const hasExpiry = fullUrl.includes('?e=');
+      candidates.push({ url: fullUrl, width: width, height: height, hasSig: hasSig, hasExpiry: hasExpiry, rootIndex: rootUrlCount - 1 });
+    }
+
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] vector-image: rootUrl #' + (rootUrlCount - 1) + ' at offset=' + rootMatch.index,
+        'rootUrlLen=' + rootUrl.length,
+        'segmentsFound=' + segsForRoot,
+        'rootUrl=' + rootUrl.substring(0, 110),
+      );
+    }
+  }
+
+  if (candidates.length === 0) {
+    if (DEBUG_VERBOSE) {
+      // Log diagnostic info to help future debugging if the page format
+      // changes again. Capture presence of related markers so logs alone
+      // tell us whether the feature is there but shaped differently.
+      const anyLicdnRootUrl = /"rootUrl"\s*:\s*"[^"]*licdn\.com[^"]*"/.test(decoded);
+      const displayPhotoRoot = /"rootUrl"\s*:\s*"[^"]*profile-displayphoto-shrink[^"]*"/.test(decoded);
+      const hasFilePathSeg = decoded.indexOf('fileIdentifyingUrlPathSegment') !== -1;
+      const hasVectorImage = decoded.indexOf('VectorImage') !== -1;
+      console.warn(
+        '[reknown-ext] vector-image: no candidates',
+        'rootUrlCount=' + rootUrlCount,
+        'anyLicdnRootUrl=' + anyLicdnRootUrl,
+        'displayPhotoRoot=' + displayPhotoRoot,
+        'hasFilePathSeg=' + hasFilePathSeg,
+        'hasVectorImage=' + hasVectorImage,
+      );
+      // Dump a small snippet around the first displayphoto occurrence to aid
+      // future reverse-engineering if LinkedIn changes the field name.
+      const dpIdx = decoded.indexOf('profile-displayphoto-shrink');
+      if (dpIdx !== -1) {
+        const start = Math.max(0, dpIdx - 200);
+        const end = Math.min(decoded.length, dpIdx + 400);
+        console.warn(
+          '[reknown-ext] vector-image: snippet around first displayphoto occurrence:',
+          decoded.substring(start, end),
+        );
+      }
+    }
+    return null;
+  }
+
+  // Filter to candidates with a valid signature. LinkedIn rejects image
+  // fetches without the signed query params.
+  const signed = candidates.filter(function (c) { return c.hasSig && c.hasExpiry && c.width > 0; });
+
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] vector-image: ' + candidates.length + ' total candidates, ' + signed.length + ' signed',
+      'sizes=' + JSON.stringify(candidates.map(function (c) { return c.width + 'x' + c.height + (c.hasSig ? 's' : '') + (c.hasExpiry ? 'e' : ''); })),
+    );
+  }
+
+  if (signed.length === 0) {
+    if (DEBUG_VERBOSE) {
+      console.warn(
+        '[reknown-ext] vector-image: ' + candidates.length + ' constructed candidates but none had both ?e= expiry and &v=/&t= signature',
+        'sampleUrl=' + (candidates[0] ? candidates[0].url.substring(0, 160) : ''),
+      );
+    }
+    return null;
+  }
+
+  // Prefer sizes near MAX_PHOTO_DIM. Sort ascending and pick the smallest
+  // size that is >= MAX_PHOTO_DIM; if none, pick the largest available.
+  signed.sort(function (a, b) { return a.width - b.width; });
+  let best = signed[signed.length - 1];
+  for (var i = 0; i < signed.length; i++) {
+    if (signed[i].width >= MAX_PHOTO_DIM) { best = signed[i]; break; }
+  }
+
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] vector-image: selected',
+      'dims=' + best.width + 'x' + best.height,
+      'urlLen=' + best.url.length,
+      'rootIndex=' + best.rootIndex,
+      'url=' + best.url.substring(0, 140),
+    );
+  }
+
+  return best.url;
+}
+
 function extractFromLicdnRegex(html) {
   // LinkedIn embeds preload JSON inside <code> elements with HTML-entity-
   // escaped delimiters. The original implementation matched before decoding,
@@ -143,18 +305,9 @@ function extractFromLicdnRegex(html) {
   // exclude `\` to stop at JS string-literal escapes in <script>-embedded
   // JSON, where quotes are backslash-escaped instead of HTML-entity-escaped.
   //
-  // Additionally, <script>-embedded JSON may use JS unicode escapes like
-  // \u0026 for &, \" for ", and \/ for /. We normalize these BEFORE the
-  // HTML-entity decode so that signed query strings (&v=beta&t=<hmac>)
-  // survive intact rather than being truncated at the first backslash.
-  const jsNormalized = html
-    .replace(/\\u0026/g, '&')
-    .replace(/\\u003d/g, '=')
-    .replace(/\\u003a/g, ':')
-    .replace(/\\u002[fF]/g, '/')
-    .replace(/\\"/g, '"')
-    .replace(/\\\//g, '/');
-  const decoded = decodeHtml(jsNormalized);
+  // Note: the JS unicode-escape + HTML-entity normalization is shared with
+  // extractFromVectorImage via normalizeLinkedInHtml().
+  const decoded = normalizeLinkedInHtml(html);
   const URL_BODY = '[^"\'\\s<>\\\\]';
 
   // Prefer the avatar URL explicitly. LinkedIn's preload JSON lists the
@@ -214,6 +367,18 @@ function extractFromLicdnRegex(html) {
       ' displayphoto URLs look truncated/invalid, bestScore=' + bestScore,
       bestPhoto ? ('bestUrl=' + bestPhoto) : '',
     );
+    // Dump HTML context around the first truncated match so that we can
+    // diagnose what encoding LinkedIn is now using without having to save
+    // the full 1.3MB page. Shows ~200 chars before and ~400 chars after.
+    var firstMatch = allPhotoMatches[0];
+    if (firstMatch && typeof firstMatch.index === 'number') {
+      var ctxStart = Math.max(0, firstMatch.index - 200);
+      var ctxEnd = Math.min(decoded.length, firstMatch.index + 400);
+      console.warn(
+        '[reknown-ext] licdn-regex: context around truncated match:',
+        decoded.substring(ctxStart, ctxEnd),
+      );
+    }
   }
 
   // Fallback: any licdn image URL, but explicitly skip background banners.
@@ -256,6 +421,7 @@ function extractPhotoUrl(html) {
     ['json-ld', extractFromJsonLd],
     ['og:image', extractFromOgImage],
     ['profile-img', extractFromProfileImg],
+    ['vector-image', extractFromVectorImage],
     ['licdn-regex', extractFromLicdnRegex],
   ];
   const outcomes = [];
@@ -345,6 +511,9 @@ async function enrichOne(person) {
       jsonLdPerson: html.includes('"@type":"Person"') || html.includes('"@type": "Person"'),
       ogImage: /property=["']og:image["']/i.test(html),
       displayPhoto: html.includes('profile-displayphoto-shrink'),
+      vectorImage: html.includes('VectorImage'),
+      rootUrl: html.includes('rootUrl'),
+      filePathSegment: html.includes('fileIdentifyingUrlPathSegment'),
       authwall: /authwall|checkpoint/i.test(html),
       pvTopCard: html.includes('pv-top-card'),
       bprGuid: html.includes('bpr-guid'),
