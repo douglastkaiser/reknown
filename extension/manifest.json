@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "reknown — LinkedIn Photo Enricher",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Fetches LinkedIn profile photos for your reknown face-recall deck",
   "browser_specific_settings": {
     "gecko": {
