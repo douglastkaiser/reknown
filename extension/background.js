@@ -6,6 +6,21 @@ const browserApi = globalThis.browser || globalThis.chrome;
 // Single source of truth for the extension version: the manifest.
 const EXT_VERSION = browserApi.runtime.getManifest().version;
 
+// Startup environment snapshot: confirms we're running in the expected
+// browser with the expected feature set (createImageBitmap, OffscreenCanvas,
+// FileReader). If any of these are missing, the resize/data-url path
+// silently falls back and it's useful to see that in the first log line.
+console.log(
+  '[reknown-ext] background startup',
+  'version=' + EXT_VERSION,
+  'runtimeId=' + browserApi.runtime.id,
+  'hasCreateImageBitmap=' + (typeof createImageBitmap),
+  'hasOffscreenCanvas=' + (typeof OffscreenCanvas),
+  'hasFileReader=' + (typeof FileReader),
+  'hasFetch=' + (typeof fetch),
+  'ua=' + (typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a').substring(0, 160),
+);
+
 // Keep-alive ports: while any are open, Firefox will not unload the
 // non-persistent event page. The content script opens one per batch and
 // closes it on REKNOWN_ENRICH_COMPLETE. Without this, runBatch's in-flight
@@ -16,7 +31,11 @@ const keepAliveConnections = new Map(); // requestId -> Set<Port>
 browserApi.runtime.onConnect.addListener((port) => {
   if (!port.name || !port.name.startsWith('reknown-enrich-batch:')) return;
   const requestId = port.name.slice('reknown-enrich-batch:'.length);
-  console.log('[reknown-ext] keep-alive port connected name=' + port.name);
+  console.log(
+    '[reknown-ext] keep-alive port connected name=' + port.name,
+    'activeBatches=' + activeBatches.size,
+    'existingPortsForReq=' + ((keepAliveConnections.get(requestId) || new Set()).size),
+  );
   let set = keepAliveConnections.get(requestId);
   if (!set) {
     set = new Set();
@@ -24,12 +43,18 @@ browserApi.runtime.onConnect.addListener((port) => {
   }
   set.add(port);
   port.onDisconnect.addListener(() => {
-    void browserApi.runtime.lastError;
+    const lastErr = browserApi.runtime.lastError;
     set.delete(port);
     if (set.size === 0) keepAliveConnections.delete(requestId);
     // If the tab closed mid-batch, cancel cleanly so we stop hammering LinkedIn.
     const batch = activeBatches.get(requestId);
     if (batch) batch.cancelled = true;
+    console.log(
+      '[reknown-ext] keep-alive port disconnected name=' + port.name,
+      'remainingPortsForReq=' + set.size,
+      'batchFound=' + !!batch,
+      'lastErr=' + (lastErr ? lastErr.message : 'none'),
+    );
   });
 });
 
@@ -63,11 +88,21 @@ async function sleepCancellable(ms, batch) {
 function sendToTab(tabId, message) {
   try {
     browserApi.tabs.sendMessage(tabId, message, () => {
-      // Swallow "receiving end does not exist" errors (tab closed).
-      void browserApi.runtime.lastError;
+      // Log instead of swallowing: "receiving end does not exist" on a
+      // closed tab is normal; anything else is actionable. "Message length
+      // exceeded" would surface here if the data URL is too large to post.
+      const lastErr = browserApi.runtime.lastError;
+      if (lastErr && DEBUG_VERBOSE) {
+        console.warn(
+          '[reknown-ext] sendToTab lastError',
+          'type=' + (message && message.type),
+          'tabId=' + tabId,
+          'msg=' + lastErr.message,
+        );
+      }
     });
   } catch (err) {
-    console.warn('[reknown-ext] sendToTab failed', err);
+    console.warn('[reknown-ext] sendToTab threw', err);
   }
 }
 
@@ -87,42 +122,133 @@ function isRateLimited(response) {
 function extractFromJsonLd(html) {
   const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
   let match;
+  let scriptCount = 0;
+  let parseOkCount = 0;
+  let parseFailCount = 0;
+  const diagTypes = [];
   while ((match = re.exec(html)) !== null) {
+    scriptCount++;
     try {
       const data = JSON.parse(match[1].trim());
+      parseOkCount++;
       const items = Array.isArray(data) ? data : [data];
       for (const item of items) {
         const graph = item && item['@graph'] ? item['@graph'] : [item];
         for (const node of graph) {
           if (!node) continue;
+          if (DEBUG_VERBOSE && diagTypes.length < 8) {
+            diagTypes.push({
+              type: node['@type'],
+              hasImage: typeof node.image !== 'undefined',
+              imageKind: typeof node.image,
+            });
+          }
           const image = node.image;
-          if (typeof image === 'string') return image;
+          if (typeof image === 'string') {
+            if (DEBUG_VERBOSE) {
+              console.log(
+                '[reknown-ext] json-ld: found string image',
+                'type=' + node['@type'],
+                'imgPrefix=' + image.substring(0, 90),
+              );
+            }
+            return image;
+          }
           if (image && typeof image === 'object') {
-            if (typeof image.contentUrl === 'string') return image.contentUrl;
-            if (typeof image.url === 'string') return image.url;
+            if (typeof image.contentUrl === 'string') {
+              if (DEBUG_VERBOSE) {
+                console.log(
+                  '[reknown-ext] json-ld: found image.contentUrl',
+                  'type=' + node['@type'],
+                  'imgPrefix=' + image.contentUrl.substring(0, 90),
+                );
+              }
+              return image.contentUrl;
+            }
+            if (typeof image.url === 'string') {
+              if (DEBUG_VERBOSE) {
+                console.log(
+                  '[reknown-ext] json-ld: found image.url',
+                  'type=' + node['@type'],
+                  'imgPrefix=' + image.url.substring(0, 90),
+                );
+              }
+              return image.url;
+            }
           }
         }
       }
-    } catch {
+    } catch (err) {
+      parseFailCount++;
       // Ignore malformed JSON-LD blocks.
     }
+  }
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] json-ld: scanned',
+      'scripts=' + scriptCount,
+      'parseOk=' + parseOkCount,
+      'parseFail=' + parseFailCount,
+      'types=' + JSON.stringify(diagTypes),
+    );
   }
   return null;
 }
 
 function extractFromOgImage(html) {
-  const m = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-    || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+  const primary = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+  const swapped = primary ? null : html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+  const m = primary || swapped;
+  if (DEBUG_VERBOSE) {
+    const allOg = html.match(/property=["']og:image["']/gi);
+    console.log(
+      '[reknown-ext] og:image: primaryMatch=' + !!primary,
+      'swappedMatch=' + !!swapped,
+      'totalOgImageProps=' + (allOg ? allOg.length : 0),
+      'rawContent=' + (m ? JSON.stringify(m[1].substring(0, 120)) : 'null'),
+      'decodedContent=' + (m ? JSON.stringify(decodeHtml(m[1]).substring(0, 120)) : 'null'),
+      'looksLikeGhost=' + (m ? /ghosts|default-avatar|anon-user/i.test(m[1]) : false),
+      'looksLikeStatic=' + (m ? /static\.licdn\.com/i.test(m[1]) : false),
+    );
+  }
   return m ? decodeHtml(m[1]) : null;
 }
 
 function extractFromProfileImg(html) {
   const classPatterns = [
-    /<img[^>]+class=["'][^"']*pv-top-card-profile-picture[^"']*["'][^>]*>/i,
-    /<img[^>]+class=["'][^"']*profile-photo-edit__preview[^"']*["'][^>]*>/i,
+    { name: 'pv-top-card-profile-picture', re: /<img[^>]+class=["'][^"']*pv-top-card-profile-picture[^"']*["'][^>]*>/i },
+    { name: 'profile-photo-edit__preview', re: /<img[^>]+class=["'][^"']*profile-photo-edit__preview[^"']*["'][^>]*>/i },
   ];
-  for (const pat of classPatterns) {
-    const tag = html.match(pat);
+  for (const { name, re } of classPatterns) {
+    const tag = html.match(re);
+    if (DEBUG_VERBOSE) {
+      // Log whether any <img> tag for this class was found, and if so
+      // which attributes it carries. LinkedIn has been known to move the
+      // real URL onto data-delayed-url / data-ghost-url for lazy loading,
+      // so `src` alone may be the wrong attribute to read.
+      let hasSrc = false;
+      let hasDelayed = false;
+      let hasGhost = false;
+      let hasLazy = false;
+      let hasDataSrc = false;
+      if (tag) {
+        hasSrc = /\bsrc=["']/i.test(tag[0]);
+        hasDelayed = /\bdata-delayed-url=/i.test(tag[0]);
+        hasGhost = /\bdata-ghost-url=/i.test(tag[0]);
+        hasLazy = /\bdata-lazy-src=/i.test(tag[0]);
+        hasDataSrc = /\bdata-src=/i.test(tag[0]);
+      }
+      console.log(
+        '[reknown-ext] profile-img: pattern=' + name,
+        'matched=' + !!tag,
+        'hasSrc=' + hasSrc,
+        'hasDelayed=' + hasDelayed,
+        'hasGhost=' + hasGhost,
+        'hasLazy=' + hasLazy,
+        'hasDataSrc=' + hasDataSrc,
+        'tagPrefix=' + (tag ? tag[0].substring(0, 180) : 'null'),
+      );
+    }
     if (tag) {
       const src = tag[0].match(/src=["']([^"']+)["']/i);
       if (src) return decodeHtml(src[1]);
@@ -144,7 +270,20 @@ function extractFromProfileImg(html) {
 // (?e=...&v=beta&t=<hmac>) survive intact, then decode HTML entities so
 // that `&quot;` becomes a real `"` terminator. Both the licdn-regex and
 // vector-image strategies rely on this identical preprocessing.
-function normalizeLinkedInHtml(html) {
+function countOccurrences(haystack, needle) {
+  if (!needle) return 0;
+  var n = 0;
+  var i = 0;
+  while ((i = haystack.indexOf(needle, i)) !== -1) { n++; i += needle.length; }
+  return n;
+}
+
+function countRegex(haystack, re) {
+  var m = haystack.match(re);
+  return m ? m.length : 0;
+}
+
+function normalizeLinkedInHtml(html, debugLabel) {
   const jsNormalized = html
     .replace(/\\u0026/g, '&')
     .replace(/\\u003d/g, '=')
@@ -153,7 +292,44 @@ function normalizeLinkedInHtml(html) {
     .replace(/\\u003[fF]/g, '?')
     .replace(/\\"/g, '"')
     .replace(/\\\//g, '/');
-  return decodeHtml(jsNormalized);
+  const decoded = decodeHtml(jsNormalized);
+  if (DEBUG_VERBOSE) {
+    const beforeCounts = {
+      'u0026': countOccurrences(html, '\\u0026'),
+      'u003d': countOccurrences(html, '\\u003d'),
+      'u003a': countOccurrences(html, '\\u003a'),
+      'u002f': countOccurrences(html, '\\u002f') + countOccurrences(html, '\\u002F'),
+      'bs-quote': countOccurrences(html, '\\"'),
+      'amp': countOccurrences(html, '&amp;'),
+      'quot': countOccurrences(html, '&quot;'),
+      'lt': countOccurrences(html, '&lt;'),
+      'gt': countOccurrences(html, '&gt;'),
+      '#61': countOccurrences(html, '&#61;'),
+      '#x3D': countOccurrences(html, '&#x3D;') + countOccurrences(html, '&#x3d;'),
+      '#38': countOccurrences(html, '&#38;'),
+      '#x26': countOccurrences(html, '&#x26;') + countOccurrences(html, '&#x26;'),
+      'numeric-dec': countRegex(html, /&#\d+;/g),
+      'numeric-hex': countRegex(html, /&#x[0-9a-fA-F]+;/g),
+    };
+    const afterCounts = {
+      'u0026': countOccurrences(decoded, '\\u0026'),
+      'u003d': countOccurrences(decoded, '\\u003d'),
+      'amp': countOccurrences(decoded, '&amp;'),
+      'quot': countOccurrences(decoded, '&quot;'),
+      '#61': countOccurrences(decoded, '&#61;'),
+      '#x3D': countOccurrences(decoded, '&#x3D;') + countOccurrences(decoded, '&#x3d;'),
+      'numeric-dec': countRegex(decoded, /&#\d+;/g),
+      'numeric-hex': countRegex(decoded, /&#x[0-9a-fA-F]+;/g),
+    };
+    console.log(
+      '[reknown-ext] normalize summary' + (debugLabel ? ' (' + debugLabel + ')' : ''),
+      'rawLen=' + html.length,
+      'decodedLen=' + decoded.length,
+      'before=' + JSON.stringify(beforeCounts),
+      'after=' + JSON.stringify(afterCounts),
+    );
+  }
+  return decoded;
 }
 
 // Extract profile photo URL using LinkedIn's VectorImage pattern.
@@ -175,7 +351,27 @@ function normalizeLinkedInHtml(html) {
 // rootUrl (~85 chars) is what licdn-regex matches and rejects as truncated;
 // we need this strategy to construct the real signed URL.
 function extractFromVectorImage(html) {
-  const decoded = normalizeLinkedInHtml(html);
+  const decoded = normalizeLinkedInHtml(html, 'vector-image');
+
+  // Upfront diagnostics: how many artifacts / VectorImage objects / rootUrls
+  // does the decoded HTML contain at all? If any of these are unexpectedly
+  // zero we know the format has shifted and no amount of window-tuning will
+  // help.
+  if (DEBUG_VERBOSE) {
+    const totalSegs = countRegex(decoded, /"fileIdentifyingUrlPathSegment"\s*:\s*"[^"]+"/g);
+    const totalRootUrls = countRegex(decoded, /"rootUrl"\s*:\s*"[^"]*"/g);
+    const totalDisplayPhotoRoots = countRegex(decoded, /"rootUrl"\s*:\s*"[^"]*profile-displayphoto-shrink_?"/g);
+    const totalVectorImage = countOccurrences(decoded, 'com.linkedin.common.VectorImage');
+    const totalVectorArtifact = countOccurrences(decoded, 'com.linkedin.common.VectorArtifact');
+    console.log(
+      '[reknown-ext] vector-image: decoded HTML stats',
+      'totalSegs=' + totalSegs,
+      'totalRootUrls=' + totalRootUrls,
+      'totalDisplayPhotoRoots=' + totalDisplayPhotoRoots,
+      'totalVectorImage=' + totalVectorImage,
+      'totalVectorArtifact=' + totalVectorArtifact,
+    );
+  }
 
   // Find rootUrl values that point at the profile displayphoto base.
   // Explicitly excludes profile-displaybackgroundimage-shrink_ (banners)
@@ -188,25 +384,74 @@ function extractFromVectorImage(html) {
   while ((rootMatch = rootUrlRe.exec(decoded)) !== null) {
     rootUrlCount++;
     const rootUrl = rootMatch[1];
+    const beforeRoot = rootMatch.index;
     const afterRoot = rootMatch.index + rootMatch[0].length;
 
-    // The artifacts array for this VectorImage should appear within the
-    // next couple KB. Use a generous window to tolerate reordering.
-    const searchWindow = decoded.substring(afterRoot, afterRoot + 4000);
+    // Bidirectional search window: LinkedIn's current JSON serialization
+    // places `artifacts: [...]` BEFORE `rootUrl` inside the same
+    // VectorImage object — the previous forward-only search explained
+    // `segmentsFound=0` across all 3 rootUrls. Widen to ±4 KB around the
+    // rootUrl. If we grab segments from a sibling VectorImage, they still
+    // reconstruct against THIS rootUrl, so we can't produce a URL for a
+    // different profile.
+    const windowStart = Math.max(0, beforeRoot - 4000);
+    const windowEnd = Math.min(decoded.length, afterRoot + 4000);
+    const backwardWindow = decoded.substring(windowStart, beforeRoot);
+    const forwardWindow = decoded.substring(afterRoot, windowEnd);
 
     const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
-    let segMatch;
+    const windowSegments = [];
+
+    // Backward scan
+    let bwMatch;
+    let bwCount = 0;
+    while ((bwMatch = segRe.exec(backwardWindow)) !== null) {
+      bwCount++;
+      windowSegments.push({ direction: 'backward', segment: bwMatch[1], offset: bwMatch.index });
+    }
+    // Forward scan (reset regex state with a fresh regex to avoid lastIndex
+    // confusion between the two string inputs).
+    const segReFwd = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    let fwMatch;
+    let fwCount = 0;
+    while ((fwMatch = segReFwd.exec(forwardWindow)) !== null) {
+      fwCount++;
+      windowSegments.push({ direction: 'forward', segment: fwMatch[1], offset: fwMatch.index });
+    }
+
     let segsForRoot = 0;
-    while ((segMatch = segRe.exec(searchWindow)) !== null) {
-      segsForRoot++;
-      const segment = segMatch[1];
+    for (let si = 0; si < windowSegments.length; si++) {
+      const segment = windowSegments[si].segment;
       const fullUrl = rootUrl + segment;
       const dimMatch = segment.match(/^(\d+)_(\d+)\//);
       const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
       const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
       const hasSig = fullUrl.includes('&v=') && fullUrl.includes('&t=');
       const hasExpiry = fullUrl.includes('?e=');
-      candidates.push({ url: fullUrl, width: width, height: height, hasSig: hasSig, hasExpiry: hasExpiry, rootIndex: rootUrlCount - 1 });
+      const hasResidualEntity = /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment);
+      if (DEBUG_VERBOSE) {
+        console.log(
+          '[reknown-ext] vector-image: candidate root#' + (rootUrlCount - 1)
+            + ' dir=' + windowSegments[si].direction
+            + ' dims=' + width + 'x' + height
+            + ' hasSig=' + hasSig
+            + ' hasExpiry=' + hasExpiry
+            + ' residualEntity=' + hasResidualEntity
+            + ' segPrefix=' + segment.substring(0, 48)
+            + ' segLen=' + segment.length,
+        );
+      }
+      candidates.push({
+        url: fullUrl,
+        width: width,
+        height: height,
+        hasSig: hasSig,
+        hasExpiry: hasExpiry,
+        hasResidualEntity: hasResidualEntity,
+        rootIndex: rootUrlCount - 1,
+        direction: windowSegments[si].direction,
+      });
+      segsForRoot++;
     }
 
     if (DEBUG_VERBOSE) {
@@ -214,6 +459,10 @@ function extractFromVectorImage(html) {
         '[reknown-ext] vector-image: rootUrl #' + (rootUrlCount - 1) + ' at offset=' + rootMatch.index,
         'rootUrlLen=' + rootUrl.length,
         'segmentsFound=' + segsForRoot,
+        'backward=' + bwCount,
+        'forward=' + fwCount,
+        'windowStart=' + windowStart,
+        'windowEnd=' + windowEnd,
         'rootUrl=' + rootUrl.substring(0, 110),
       );
     }
@@ -256,9 +505,23 @@ function extractFromVectorImage(html) {
   const signed = candidates.filter(function (c) { return c.hasSig && c.hasExpiry && c.width > 0; });
 
   if (DEBUG_VERBOSE) {
+    // Tally reject reasons so we can tell at-a-glance which gate is killing
+    // candidates: missing signature, missing expiry, zero-width (bad dim
+    // regex), or residual entity (decoder miss).
+    var rejectReasons = { unsignedOnly: 0, missingExpiry: 0, zeroWidth: 0, residualEntity: 0, dirBackward: 0, dirForward: 0 };
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var c = candidates[ci];
+      if (!c.hasSig) rejectReasons.unsignedOnly++;
+      if (!c.hasExpiry) rejectReasons.missingExpiry++;
+      if (c.width <= 0) rejectReasons.zeroWidth++;
+      if (c.hasResidualEntity) rejectReasons.residualEntity++;
+      if (c.direction === 'backward') rejectReasons.dirBackward++;
+      if (c.direction === 'forward') rejectReasons.dirForward++;
+    }
     console.log(
       '[reknown-ext] vector-image: ' + candidates.length + ' total candidates, ' + signed.length + ' signed',
-      'sizes=' + JSON.stringify(candidates.map(function (c) { return c.width + 'x' + c.height + (c.hasSig ? 's' : '') + (c.hasExpiry ? 'e' : ''); })),
+      'sizes=' + JSON.stringify(candidates.map(function (c) { return c.width + 'x' + c.height + (c.hasSig ? 's' : '') + (c.hasExpiry ? 'e' : '') + (c.hasResidualEntity ? '!' : '') + '/' + c.direction.charAt(0); })),
+      'rejectReasons=' + JSON.stringify(rejectReasons),
     );
   }
 
@@ -267,6 +530,7 @@ function extractFromVectorImage(html) {
       console.warn(
         '[reknown-ext] vector-image: ' + candidates.length + ' constructed candidates but none had both ?e= expiry and &v=/&t= signature',
         'sampleUrl=' + (candidates[0] ? candidates[0].url.substring(0, 160) : ''),
+        'sampleHasResidualEntity=' + (candidates[0] ? candidates[0].hasResidualEntity : false),
       );
     }
     return null;
@@ -307,7 +571,7 @@ function extractFromLicdnRegex(html) {
   //
   // Note: the JS unicode-escape + HTML-entity normalization is shared with
   // extractFromVectorImage via normalizeLinkedInHtml().
-  const decoded = normalizeLinkedInHtml(html);
+  const decoded = normalizeLinkedInHtml(html, 'licdn-regex');
   const URL_BODY = '[^"\'\\s<>\\\\]';
 
   // Prefer the avatar URL explicitly. LinkedIn's preload JSON lists the
@@ -325,12 +589,46 @@ function extractFromLicdnRegex(html) {
   const allPhotoMatches = [...decoded.matchAll(photoRe)];
 
   if (DEBUG_VERBOSE) {
+    // Raw occurrence counts vs regex-match count. If these diverge it means
+    // the char class is terminating too early on some encoding we haven't
+    // accounted for yet. `profile-displayphoto-shrink` is the string itself;
+    // `displayphotoOccurrences` tells us how many distinct photo objects are
+    // really in the decoded HTML, regardless of how the regex fared.
+    const displayphotoOccurrences = countOccurrences(decoded, 'profile-displayphoto-shrink');
+    const rawDisplayphotoOccurrences = countOccurrences(html, 'profile-displayphoto-shrink');
     console.log(
       '[reknown-ext] licdn-regex: found ' + allPhotoMatches.length + ' displayphoto URLs',
+      'rawDisplayphotoOccurrences=' + rawDisplayphotoOccurrences,
+      'decodedDisplayphotoOccurrences=' + displayphotoOccurrences,
       JSON.stringify(allPhotoMatches.map(function (m, i) {
-        return { i: i, len: m[0].length, hasSig: m[0].includes('&v=') && m[0].includes('&t='), url: m[0].substring(0, 90) };
+        return {
+          i: i,
+          len: m[0].length,
+          hasSig: m[0].includes('&v=') && m[0].includes('&t='),
+          hasExpiry: m[0].includes('?e='),
+          residualEntity: /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(m[0]),
+          url: m[0].substring(0, 90),
+        };
       })),
     );
+    // For each match, log the 40 chars AFTER the match end so we can see
+    // exactly what character terminated the regex body — this is the
+    // smoking-gun view for "why is everything truncated to 85 chars".
+    for (let mi = 0; mi < Math.min(allPhotoMatches.length, 3); mi++) {
+      const mm = allPhotoMatches[mi];
+      const endIdx = mm.index + mm[0].length;
+      const tail = decoded.substring(endIdx, Math.min(decoded.length, endIdx + 60));
+      console.log(
+        '[reknown-ext] licdn-regex: match #' + mi + ' terminator context',
+        'endIdx=' + endIdx,
+        'firstCharAfter=' + JSON.stringify(tail.charAt(0)),
+        'tail=' + JSON.stringify(tail),
+        'tailHasAmpEnt=' + /&#\d+;|&#x[0-9a-fA-F]+;/.test(tail),
+        'tailHasUnicodeEsc=' + /\\u00[0-9a-fA-F]{2}/.test(tail),
+        'tailHasBsQuote=' + tail.includes('\\"'),
+        'tailHasLiteralAmp=' + (tail.charAt(0) === '&'),
+      );
+    }
   }
 
   // Score each match. A valid signed LinkedIn photo URL is 200+ chars and
@@ -401,13 +699,37 @@ function extractFromLicdnRegex(html) {
   return null;
 }
 
+// LinkedIn embeds JSON inside HTML <code>/<script> blocks using a mix of
+// named entities (&amp;, &quot;, &#39;, &lt;, &gt;), decimal numeric entities
+// (&#61; = '='), and hex numeric entities (&#x3D; = '='). The signed photo
+// URL's query string is `?e=...&v=beta&t=<hmac>` — if we fail to decode
+// `&#61;` back to `=`, every signature check later on fails and the URL is
+// rejected as "unsigned", which was the exact symptom in the earlier logs.
+//
+// Decimal/hex numeric entities are collapsed via a single regex pass. We
+// guard against absurd code points (> 0x10FFFF) by returning the original
+// match verbatim, so malformed input can never make this throw.
 function decodeHtml(s) {
-  return s
+  var named = s
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>');
+  return named.replace(/&#(x[0-9a-fA-F]+|\d+);/g, function (match, body) {
+    var code;
+    if (body.charAt(0) === 'x' || body.charAt(0) === 'X') {
+      code = parseInt(body.substring(1), 16);
+    } else {
+      code = parseInt(body, 10);
+    }
+    if (!Number.isFinite(code) || code < 0 || code > 0x10FFFF) return match;
+    try {
+      return String.fromCodePoint(code);
+    } catch (err) {
+      return match;
+    }
+  });
 }
 
 function isDefaultAvatar(url) {
@@ -417,6 +739,31 @@ function isDefaultAvatar(url) {
 }
 
 function extractPhotoUrl(html) {
+  // Upfront HTML-landscape snapshot: single-line view of every interesting
+  // marker so we can correlate strategy outcomes with the underlying page
+  // shape without having to parse other logs.
+  if (DEBUG_VERBOSE) {
+    const snapshot = {
+      htmlLen: html.length,
+      jsonLdPerson: countRegex(html, /"@type"\s*:\s*"Person"/g),
+      ldJsonScripts: countRegex(html, /type=["']application\/ld\+json["']/g),
+      ogImageMeta: countRegex(html, /property=["']og:image["']/g),
+      pvTopCardPic: countOccurrences(html, 'pv-top-card-profile-picture'),
+      profilePhotoEdit: countOccurrences(html, 'profile-photo-edit__preview'),
+      vectorImage: countOccurrences(html, 'com.linkedin.common.VectorImage'),
+      vectorArtifact: countOccurrences(html, 'com.linkedin.common.VectorArtifact'),
+      filePathSegment: countOccurrences(html, 'fileIdentifyingUrlPathSegment'),
+      displayPhoto: countOccurrences(html, 'profile-displayphoto-shrink'),
+      displayBackground: countOccurrences(html, 'profile-displaybackgroundimage'),
+      ghostPerson: countOccurrences(html, 'ghost-person') + countOccurrences(html, 'ghosts/person'),
+      authwall: countOccurrences(html, 'authwall'),
+      joinNow: countOccurrences(html, 'Join now'),
+      signIn: countOccurrences(html, 'Sign in'),
+      bpr: countOccurrences(html, 'bpr-guid'),
+    };
+    console.log('[reknown-ext] extractPhotoUrl: HTML landscape', JSON.stringify(snapshot));
+  }
+
   const strategies = [
     ['json-ld', extractFromJsonLd],
     ['og:image', extractFromOgImage],
@@ -426,25 +773,27 @@ function extractPhotoUrl(html) {
   ];
   const outcomes = [];
   for (const [name, fn] of strategies) {
+    const t0 = Date.now();
     try {
       const url = fn(html);
+      const dt = Date.now() - t0;
       if (url && !isDefaultAvatar(url)) {
-        console.log('[reknown-ext] photo extracted via', name);
+        console.log('[reknown-ext] photo extracted via', name, 'in', dt + 'ms');
         if (DEBUG_VERBOSE) {
-          outcomes.push({ strategy: name, result: 'MATCH', urlPrefix: url.substring(0, 80), len: url.length });
-          console.log('[reknown-ext] strategy outcomes:', JSON.stringify(outcomes));
+          outcomes.push({ strategy: name, result: 'MATCH', urlPrefix: url.substring(0, 80), len: url.length, ms: dt });
+          console.log('[reknown-ext] strategy outcomes (on success):', JSON.stringify(outcomes));
         }
         return url;
       }
       // Record why this strategy didn't win.
       if (!url) {
-        outcomes.push({ strategy: name, result: 'null' });
+        outcomes.push({ strategy: name, result: 'null', ms: dt });
       } else if (isDefaultAvatar(url)) {
-        outcomes.push({ strategy: name, result: 'default-avatar', urlPrefix: url.substring(0, 80) });
+        outcomes.push({ strategy: name, result: 'default-avatar', urlPrefix: url.substring(0, 80), ms: dt });
       }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
-      outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100) });
+      outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
     }
   }
   if (DEBUG_VERBOSE) {
@@ -466,6 +815,14 @@ async function blobToDataUrl(blob) {
 async function resizeBlob(blob) {
   try {
     if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') {
+      if (DEBUG_VERBOSE) {
+        console.log(
+          '[reknown-ext] resize: canvas APIs unavailable, falling back to raw',
+          'hasCreateImageBitmap=' + (typeof createImageBitmap),
+          'hasOffscreenCanvas=' + (typeof OffscreenCanvas),
+          'inputSize=' + blob.size,
+        );
+      }
       return await blobToDataUrl(blob);
     }
     const bitmap = await createImageBitmap(blob);
@@ -476,6 +833,16 @@ async function resizeBlob(blob) {
     const ctx = canvas.getContext('2d');
     ctx.drawImage(bitmap, 0, 0, w, h);
     const outBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] resize done',
+        'inputSize=' + blob.size,
+        'srcDims=' + bitmap.width + 'x' + bitmap.height,
+        'scale=' + scale.toFixed(3),
+        'outDims=' + w + 'x' + h,
+        'outSize=' + outBlob.size,
+      );
+    }
     return await blobToDataUrl(outBlob);
   } catch (err) {
     console.warn('[reknown-ext] resize failed, falling back to original', err);
@@ -484,15 +851,50 @@ async function resizeBlob(blob) {
 }
 
 async function enrichOne(person) {
-  const url = String(person.linkedinUrl || '').trim();
+  const rawUrl = person && person.linkedinUrl;
+  const url = String(rawUrl || '').trim();
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] enrichOne input',
+      'personId=' + (person && person.id),
+      'personName=' + (person && person.name),
+      'rawUrlType=' + typeof rawUrl,
+      'rawLen=' + (rawUrl ? String(rawUrl).length : 0),
+      'trimmedLen=' + url.length,
+      'hadWhitespace=' + (rawUrl ? (String(rawUrl) !== url) : false),
+      'url=' + url.substring(0, 120),
+      'matchesProfileRe=' + LINKEDIN_PROFILE_RE.test(url),
+    );
+  }
   if (!LINKEDIN_PROFILE_RE.test(url)) {
     return { status: 'error', error: 'invalid_url' };
   }
+  const fetchStart = Date.now();
   let pageRes;
   try {
     pageRes = await fetch(url, { credentials: 'include', redirect: 'follow' });
   } catch (err) {
+    if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile fetch threw', String(err), 'url=' + url);
     return { status: 'error', error: 'fetch_failed' };
+  }
+  if (DEBUG_VERBOSE) {
+    const pageHdrs = {};
+    for (const key of ['content-type', 'content-length', 'content-encoding', 'server', 'x-li-fabric', 'x-li-pop', 'x-frame-options']) {
+      const v = pageRes.headers.get(key);
+      if (v) pageHdrs[key] = v;
+    }
+    console.log(
+      '[reknown-ext] profile fetch response',
+      'fetchMs=' + (Date.now() - fetchStart),
+      'status=' + pageRes.status,
+      'statusText=' + pageRes.statusText,
+      'redirected=' + pageRes.redirected,
+      'type=' + pageRes.type,
+      'ok=' + pageRes.ok,
+      'finalUrl=' + (pageRes.url || '').substring(0, 160),
+      'finalStillProfile=' + LINKEDIN_PROFILE_RE.test(pageRes.url || ''),
+      'headers=' + JSON.stringify(pageHdrs),
+    );
   }
   if (isRateLimited(pageRes)) {
     return { status: 'error', error: 'rate_limited', fatal: true };
@@ -503,10 +905,18 @@ async function enrichOne(person) {
   let html;
   try {
     html = await pageRes.text();
-  } catch {
+  } catch (err) {
+    if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile body read threw', String(err));
     return { status: 'error', error: 'fetch_failed' };
   }
   if (DEBUG_VERBOSE) {
+    // Body-level sanity: truncation detector, logged-out-shell detector,
+    // and a compact fingerprint so we can tell if LinkedIn is returning
+    // an identical minimal shell for every profile (a common symptom of
+    // the fetch being un-authenticated when the user expects it to be).
+    const startsHtml = html.substring(0, 120);
+    const endsHtml = html.substring(Math.max(0, html.length - 120));
+    const fingerprint = html.length + '|' + startsHtml.charCodeAt(0) + '|' + endsHtml.charCodeAt(endsHtml.length - 1);
     const markers = {
       jsonLdPerson: html.includes('"@type":"Person"') || html.includes('"@type": "Person"'),
       ogImage: /property=["']og:image["']/i.test(html),
@@ -517,14 +927,44 @@ async function enrichOne(person) {
       authwall: /authwall|checkpoint/i.test(html),
       pvTopCard: html.includes('pv-top-card'),
       bprGuid: html.includes('bpr-guid'),
+      joinNow: html.includes('Join now'),
+      signIn: /sign[- ]?in/i.test(html),
+      hasDoctype: /^<!doctype html/i.test(html),
+      hasHtmlClose: html.indexOf('</html>') !== -1,
+      entity61: html.includes('&#61;'),
+      entityHex3D: /&#x3[dD];/.test(html),
+      unicodeU003D: html.includes('\\u003d'),
+      bsQuotes: html.includes('\\"'),
     };
     console.log(
       '[reknown-ext] page fetched status=' + pageRes.status,
       'finalUrl=' + (pageRes.url || '').substring(0, 120),
       'htmlLen=' + html.length,
       'contentType=' + (pageRes.headers.get('content-type') || ''),
+      'fingerprint=' + fingerprint,
+      'startsWith=' + JSON.stringify(startsHtml.substring(0, 40)),
+      'endsWith=' + JSON.stringify(endsHtml.substring(endsHtml.length - 40)),
       'markers=' + JSON.stringify(markers),
     );
+
+    // Raw vs decoded snippet dump around first profile-displayphoto-shrink
+    // occurrence. Gives us an unambiguous view of what encoding LinkedIn
+    // is using *before* and *after* our normalizer touches it. Capped to
+    // one pair per fetch.
+    const dpIdx = html.indexOf('profile-displayphoto-shrink');
+    if (dpIdx !== -1) {
+      const rawStart = Math.max(0, dpIdx - 150);
+      const rawEnd = Math.min(html.length, dpIdx + 450);
+      const rawSnip = html.substring(rawStart, rawEnd);
+      // Avoid invoking normalizeLinkedInHtml on the full page (which would
+      // trigger an extra normalize-summary log); normalize just the snippet
+      // for the comparison view.
+      const decodedSnip = normalizeLinkedInHtml(rawSnip, 'snippet-probe');
+      console.log('[reknown-ext] raw snippet around displayphoto (±):', rawSnip);
+      console.log('[reknown-ext] decoded snippet around displayphoto (±):', decodedSnip);
+    } else {
+      console.log('[reknown-ext] no profile-displayphoto-shrink occurrence found in raw HTML');
+    }
   }
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     return { status: 'error', error: 'login_wall', fatal: true };
@@ -536,7 +976,12 @@ async function enrichOne(person) {
       photoUrl ? ('url=' + photoUrl) : 'null',
       'len=' + (photoUrl ? photoUrl.length : 0),
       'hasSignature=' + (photoUrl ? (photoUrl.includes('&v=') && photoUrl.includes('&t=')) : false),
+      'hasExpiry=' + (photoUrl ? photoUrl.includes('?e=') : false),
       'endsWithBackslash=' + (photoUrl ? photoUrl.endsWith('\\') : false),
+      'residualUnicodeEsc=' + (photoUrl ? /\\u00[0-9a-fA-F]{2}/.test(photoUrl) : false),
+      'residualEntity=' + (photoUrl ? /&#\d+;|&#x[0-9a-fA-F]+;/.test(photoUrl) : false),
+      'residualBsSlash=' + (photoUrl ? photoUrl.includes('\\/') : false),
+      'hostIsMediaLicdn=' + (photoUrl ? /^https:\/\/media\.licdn\.com\//.test(photoUrl) : false),
     );
   }
   if (!photoUrl) {
@@ -548,6 +993,7 @@ async function enrichOne(person) {
   if (DEBUG_VERBOSE) {
     console.log('[reknown-ext] fetching photo url=' + photoUrl);
   }
+  const photoFetchStart = Date.now();
   let imgRes;
   try {
     imgRes = await fetch(photoUrl, {
@@ -569,7 +1015,11 @@ async function enrichOne(person) {
       '[reknown-ext] photo fetch response status=' + imgRes.status,
       'statusText=' + imgRes.statusText,
       'type=' + imgRes.type,
+      'redirected=' + imgRes.redirected,
+      'ok=' + imgRes.ok,
+      'fetchMs=' + (Date.now() - photoFetchStart),
       'url=' + (imgRes.url || '').substring(0, 120),
+      'finalRedirectedToGhost=' + /ghosts|default-avatar|anon-user/i.test(imgRes.url || ''),
       'headers=' + JSON.stringify(hdrs),
     );
   }
@@ -585,13 +1035,36 @@ async function enrichOne(person) {
   let blob;
   try {
     blob = await imgRes.blob();
-  } catch {
+  } catch (err) {
+    if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo blob read threw', String(err));
     return { status: 'error', error: 'fetch_failed' };
+  }
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] photo blob',
+      'size=' + blob.size,
+      'type=' + blob.type,
+      'suspiciouslySmall=' + (blob.size < 1024),
+    );
   }
   try {
     const dataUrl = await resizeBlob(blob);
+    if (DEBUG_VERBOSE) {
+      // Message-passing to the tab has a size cap; huge data URLs can be
+      // silently dropped on some browsers. Flag that here so we see it
+      // correlated with a missing UI update rather than having to dig
+      // through `sendToTab` failures.
+      console.log(
+        '[reknown-ext] photo encoded',
+        'dataUrlLen=' + dataUrl.length,
+        'prefix=' + dataUrl.substring(0, 32),
+        'approxMB=' + (dataUrl.length / (1024 * 1024)).toFixed(2),
+        'overMessageCap=' + (dataUrl.length > 60 * 1024 * 1024),
+      );
+    }
     return { status: 'success', photoDataUrl: dataUrl };
-  } catch {
+  } catch (err) {
+    if (DEBUG_VERBOSE) console.warn('[reknown-ext] resize threw', String(err));
     return { status: 'error', error: 'fetch_failed' };
   }
 }
@@ -599,6 +1072,7 @@ async function enrichOne(person) {
 async function runBatch(requestId, people, tabId) {
   const batch = { cancelled: false };
   activeBatches.set(requestId, batch);
+  const batchStart = Date.now();
   console.log(
     '[reknown-ext] runBatch start requestId=' + requestId,
     'count=' + people.length,
@@ -606,16 +1080,38 @@ async function runBatch(requestId, people, tabId) {
     'ext=' + EXT_VERSION,
     'DEBUG_VERBOSE=' + DEBUG_VERBOSE,
   );
+  // Log the shape of the first few person objects — a malformed payload
+  // from the web app is a plausible silent-failure source.
+  if (DEBUG_VERBOSE) {
+    const sample = people.slice(0, Math.min(3, people.length)).map(function (p, i) {
+      return {
+        i: i,
+        hasId: !!(p && p.id),
+        hasName: !!(p && p.name),
+        hasLinkedinUrl: !!(p && p.linkedinUrl),
+        urlType: typeof (p && p.linkedinUrl),
+        urlLen: p && p.linkedinUrl ? String(p.linkedinUrl).length : 0,
+        urlPrefix: p && p.linkedinUrl ? String(p.linkedinUrl).substring(0, 60) : null,
+        keys: p ? Object.keys(p).slice(0, 8) : null,
+      };
+    });
+    console.log('[reknown-ext] runBatch person-sample', JSON.stringify(sample));
+  }
   let success = 0;
   let failed = 0;
   try {
     for (let i = 0; i < people.length; i++) {
-      if (batch.cancelled) break;
+      if (batch.cancelled) {
+        if (DEBUG_VERBOSE) console.log('[reknown-ext] runBatch: cancelled at loop-top i=' + i);
+        break;
+      }
       const person = people[i];
+      const personStart = Date.now();
       console.log(
         '[reknown-ext] enriching',
         i + 1 + '/' + people.length,
         'name=' + (person && person.name),
+        'elapsedBatchMs=' + (personStart - batchStart),
       );
       sendToTab(tabId, {
         type: 'REKNOWN_ENRICH_PROGRESS',
@@ -636,6 +1132,8 @@ async function runBatch(requestId, people, tabId) {
       console.log(
         '[reknown-ext] enrichOne result status=' + (result && result.status),
         'error=' + (result && result.error),
+        'personMs=' + (Date.now() - personStart),
+        'cancelledDuring=' + batch.cancelled,
       );
       if (batch.cancelled) break;
       if (result.status === 'success') {

@@ -8,7 +8,13 @@
     '[reknown-ext] content-script loaded on',
     window.location.origin,
     'URL=' + window.location.href,
+    'readyState=' + document.readyState,
+    'runtimeId=' + (browserApi && browserApi.runtime && browserApi.runtime.id),
   );
+
+  // Per-requestId tally of progress events forwarded to the page. Helps us
+  // confirm the bridge is flowing even when the page isn't updating.
+  const progressCounts = new Map(); // requestId -> { started, success, error, batch_pause, complete }
 
   // Keep in sync with manifest.json content_scripts.matches.
   const ALLOWED_ORIGIN_PATTERNS = [
@@ -81,6 +87,7 @@
         type,
         'from disallowed origin',
         event.origin,
+        'windowOrigin=' + window.location.origin,
         '— expected one of localhost/127.0.0.1/douglastkaiser.github.io/douglastkaiser.com',
       );
       return;
@@ -95,13 +102,28 @@
       }
       try {
         browserApi.runtime.sendMessage(data, () => {
-          void browserApi.runtime.lastError;
+          const lastErr = browserApi.runtime.lastError;
+          if (lastErr) {
+            console.warn(
+              '[reknown-ext] content->bg sendMessage lastError',
+              'type=' + type,
+              'requestId=' + requestId,
+              'msg=' + lastErr.message,
+            );
+          }
         });
         console.log('[reknown-ext] forwarded', type, 'to background requestId=' + requestId);
       } catch (err) {
-        console.warn('[reknown-ext] content->bg sendMessage failed', err);
+        console.warn('[reknown-ext] content->bg sendMessage threw', err);
       }
       if (type === 'REKNOWN_ENRICH_CANCEL') {
+        if (!keepAlivePorts.has(requestId)) {
+          console.warn(
+            '[reknown-ext] REKNOWN_ENRICH_CANCEL for unknown requestId — no open keep-alive port',
+            'requestId=' + requestId,
+            'openPorts=' + Array.from(keepAlivePorts.keys()).join(','),
+          );
+        }
         closeKeepAlive(requestId);
       }
     } else if (type === 'REKNOWN_EXTENSION_PING') {
@@ -116,14 +138,46 @@
       msg.type === 'REKNOWN_ENRICH_PROGRESS' ||
       msg.type === 'REKNOWN_ENRICH_COMPLETE'
     ) {
+      const requestId = String(msg.requestId || '');
+      // Bucket progress events per requestId for end-of-batch summary.
+      if (requestId) {
+        let counts = progressCounts.get(requestId);
+        if (!counts) {
+          counts = { started: 0, success: 0, error: 0, batch_pause: 0, complete: 0, other: 0 };
+          progressCounts.set(requestId, counts);
+        }
+        const bucket = msg.type === 'REKNOWN_ENRICH_COMPLETE'
+          ? 'complete'
+          : (counts.hasOwnProperty(msg.status) ? msg.status : 'other');
+        counts[bucket]++;
+      }
       console.log(
         '[reknown-ext] forwarding',
         msg.type,
         'to page status=' + (msg.status || '') + ' personId=' + (msg.personId || ''),
+        'hasPhotoDataUrl=' + !!msg.photoDataUrl,
+        'photoDataUrlLen=' + (msg.photoDataUrl ? msg.photoDataUrl.length : 0),
+        'aborted=' + (msg.aborted === true),
+        'error=' + (msg.error || ''),
       );
-      window.postMessage(msg, window.location.origin);
+      try {
+        window.postMessage(msg, window.location.origin);
+      } catch (err) {
+        console.warn(
+          '[reknown-ext] window.postMessage threw',
+          'type=' + msg.type,
+          'err=' + String(err),
+        );
+      }
       if (msg.type === 'REKNOWN_ENRICH_COMPLETE') {
-        closeKeepAlive(String(msg.requestId || ''));
+        const counts = progressCounts.get(requestId);
+        console.log(
+          '[reknown-ext] batch summary requestId=' + requestId,
+          'counts=' + JSON.stringify(counts || null),
+          'summary=' + JSON.stringify(msg.summary || null),
+        );
+        progressCounts.delete(requestId);
+        closeKeepAlive(requestId);
       }
     }
   });
