@@ -25,7 +25,11 @@ export interface EnrichProgress {
 }
 
 export interface UsePhotoEnrichmentOptions {
-  onPhotoFetched: (personId: string, photoDataUrl: string) => Promise<void> | void;
+  onPhotoFetched: (
+    personId: string,
+    photoDataUrl: string,
+    photoUrl?: string,
+  ) => Promise<void> | void;
 }
 
 const INITIAL_PROGRESS: EnrichProgress = {
@@ -61,6 +65,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             personName?: string;
             status?: string;
             photoDataUrl?: string;
+            photoUrl?: string;
             error?: EnrichErrorCode;
             aborted?: boolean;
             reason?: string;
@@ -97,7 +102,8 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         if (data.status === 'success' && data.personId && data.photoDataUrl) {
           const id = data.personId;
           const dataUrl = data.photoDataUrl;
-          void Promise.resolve(onPhotoFetchedRef.current(id, dataUrl)).catch((err) =>
+          const rawUrl = data.photoUrl;
+          void Promise.resolve(onPhotoFetchedRef.current(id, dataUrl, rawUrl)).catch((err) =>
             console.error('[reknown] onPhotoFetched failed', err),
           );
           setResults((r) => [...r, { id, name: data.personName ?? '', status: 'success' }]);

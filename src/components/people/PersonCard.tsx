@@ -55,10 +55,14 @@ export function PersonCard({
     if (!pasteUrl.trim() || !onUpdate) return;
     setSaving(true);
     try {
-      const data = await urlToData(pasteUrl.trim());
+      const trimmed = pasteUrl.trim();
+      const data = await urlToData(trimmed);
       // urlToData returns a data URL on success or the raw URL on CORS failure.
+      // When the fetch succeeds we still keep the original URL in photoUrl so
+      // the edit form has something to display; otherwise the user sees a
+      // photo but an empty Photo URL field.
       const updates: Partial<Person> = data.startsWith('data:')
-        ? { photoDataUrl: data }
+        ? { photoDataUrl: data, photoUrl: trimmed }
         : { photoUrl: data };
       await onUpdate(person.id, updates);
       setPasteUrl('');
@@ -119,6 +123,19 @@ export function PersonCard({
 
       {editing && onUpdate ? (
         <div className="mt-3 space-y-2 rounded-xl border border-border bg-bg/50 p-3">
+          {photo ? (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <img
+                src={photo}
+                alt=""
+                className="h-8 w-8 rounded-full object-cover"
+                style={{ objectPosition: 'center 25%' }}
+              />
+              <span>
+                Photo set ({person.photoDataUrl ? 'enriched / uploaded' : 'external URL'})
+              </span>
+            </div>
+          ) : null}
           <input
             className="w-full rounded-lg bg-bg px-3 py-2 text-sm"
             placeholder="Name"
