@@ -2,12 +2,13 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
 import {
-  clearScope,
   createCategory,
   listPeople,
+  migrateGuestScope,
   seedPeople,
   setActiveScope,
 } from '../lib/storage';
+import { startSync, stopSync } from '../lib/sync';
 
 interface AuthState {
   user: User | null;
@@ -25,6 +26,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isGuest, setIsGuest] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Tracks whether a sign-in is mid-handshake (guest migration + initial sync).
+  // Children must not render authenticated views until the handshake finishes,
+  // otherwise their effects would read storage before the scope and cloud
+  // data are in place.
+  const [handshaking, setHandshaking] = useState(false);
 
   const scope = user ? `u:${user.uid}` : isGuest ? 'guest' : null;
   // Keep the storage layer's active scope in sync synchronously so that
@@ -34,15 +40,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   setActiveScope(scope);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        setIsGuest(false);
-        // Signing in over a guest session: discard guest data so it does not
-        // leak between sessions.
-        void clearScope('guest');
+        setHandshaking(true);
+        try {
+          // Carry any work the user did in guest mode into their account
+          // before sync starts, so the reconciliation pass treats it as
+          // local data to push rather than discarding it.
+          await migrateGuestScope(firebaseUser.uid);
+          setActiveScope(`u:${firebaseUser.uid}`);
+          await startSync(firebaseUser.uid);
+        } catch (err) {
+          console.warn('[auth] sign-in handshake failed', err);
+        } finally {
+          setIsGuest(false);
+          setUser(firebaseUser);
+          setHandshaking(false);
+          setLoading(false);
+        }
+      } else {
+        stopSync();
+        setUser(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
     return unsubscribe;
   }, []);
@@ -69,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signOut() {
+    stopSync();
     await firebaseSignOut(auth);
     setUser(null);
     setIsGuest(false);
@@ -78,7 +99,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const authenticated = Boolean(user) || isGuest;
 
   return (
-    <AuthContext.Provider value={{ user, isGuest, scope, loading: loading && !authenticated, signInWithGoogle, continueAsGuest, signOut }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isGuest,
+        scope,
+        loading: (loading && !authenticated) || handshaking,
+        signInWithGoogle,
+        continueAsGuest,
+        signOut,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

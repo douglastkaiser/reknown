@@ -27,8 +27,10 @@ export function useStats() {
     };
 
     window.addEventListener('reknown:metrics-updated', onMetricsUpdated);
+    window.addEventListener('reknown:remote-changed', onMetricsUpdated);
     return () => {
       window.removeEventListener('reknown:metrics-updated', onMetricsUpdated);
+      window.removeEventListener('reknown:remote-changed', onMetricsUpdated);
     };
   }, [refresh]);
 

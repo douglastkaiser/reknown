@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// Each signed-in user owns a subtree at users/{uid}/** and nobody else can
+// see it. No multi-user collaboration today; revisit if shared decks or
+// roles are introduced.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
