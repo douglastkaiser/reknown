@@ -350,7 +350,7 @@ function normalizeLinkedInHtml(html, debugLabel) {
 // The full photo URL = rootUrl + fileIdentifyingUrlPathSegment. The bare
 // rootUrl (~85 chars) is what licdn-regex matches and rejects as truncated;
 // we need this strategy to construct the real signed URL.
-function extractFromVectorImage(html) {
+function extractFromVectorImage(html, slug) {
   const decoded = normalizeLinkedInHtml(html, 'vector-image');
 
   // Upfront diagnostics: how many artifacts / VectorImage objects / rootUrls
@@ -449,6 +449,7 @@ function extractFromVectorImage(html) {
         hasExpiry: hasExpiry,
         hasResidualEntity: hasResidualEntity,
         rootIndex: rootUrlCount - 1,
+        rootOffset: rootMatch.index,
         direction: windowSegments[si].direction,
       });
       segsForRoot++;
@@ -536,12 +537,60 @@ function extractFromVectorImage(html) {
     return null;
   }
 
+  // Disambiguate by target profile's publicIdentifier. Without this, when a
+  // logged-in fetch returns HTML that embeds BOTH the viewer's own nav-menu
+  // photo AND the target person's photo, we'd silently pick whichever one
+  // sorts first — historically the viewer's. Matching by publicIdentifier
+  // ties each rootUrl back to the miniProfile object that owns it.
+  //
+  // If slug is not provided (shouldn't happen: enrichOne extracts it before
+  // calling), fall back to the historical size-only selection.
+  let pool = signed;
+  if (slug) {
+    const ownerOffsets = findOwnerOffsets(decoded, slug);
+    // Annotate every signed candidate with its distance to the nearest
+    // publicIdentifier match.
+    for (let ci = 0; ci < signed.length; ci++) {
+      signed[ci].ownerDistance = nearestOwnerDistance(signed[ci].rootOffset, ownerOffsets);
+    }
+    const inWindow = signed.filter(function (c) {
+      return c.ownerDistance <= OWNER_PROXIMITY_BYTES;
+    });
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] vector-image: owner-proximity filter',
+        'slug=' + slug,
+        'ownerMatches=' + ownerOffsets.length,
+        'signedCount=' + signed.length,
+        'inWindowCount=' + inWindow.length,
+        'window=' + OWNER_PROXIMITY_BYTES + 'B',
+        'distances=' + JSON.stringify(signed.map(function (c) {
+          return { rootIndex: c.rootIndex, dim: c.width + 'x' + c.height, dist: c.ownerDistance === Infinity ? -1 : c.ownerDistance };
+        })),
+      );
+    }
+    if (ownerOffsets.length === 0 || inWindow.length === 0) {
+      // Safer to fail than to return a stranger's photo. Common cause:
+      // LinkedIn returned a logged-out shell that contains only the
+      // viewer's own displayphoto data (no target miniProfile embedded).
+      if (DEBUG_VERBOSE) {
+        console.warn(
+          '[reknown-ext] vector-image: no candidate is near "publicIdentifier":"' + slug + '"',
+          'ownerMatches=' + ownerOffsets.length,
+          'returning null instead of a likely-wrong photo',
+        );
+      }
+      return null;
+    }
+    pool = inWindow;
+  }
+
   // Prefer sizes near MAX_PHOTO_DIM. Sort ascending and pick the smallest
   // size that is >= MAX_PHOTO_DIM; if none, pick the largest available.
-  signed.sort(function (a, b) { return a.width - b.width; });
-  let best = signed[signed.length - 1];
-  for (var i = 0; i < signed.length; i++) {
-    if (signed[i].width >= MAX_PHOTO_DIM) { best = signed[i]; break; }
+  pool.sort(function (a, b) { return a.width - b.width; });
+  let best = pool[pool.length - 1];
+  for (var i = 0; i < pool.length; i++) {
+    if (pool[i].width >= MAX_PHOTO_DIM) { best = pool[i]; break; }
   }
 
   if (DEBUG_VERBOSE) {
@@ -550,6 +599,7 @@ function extractFromVectorImage(html) {
       'dims=' + best.width + 'x' + best.height,
       'urlLen=' + best.url.length,
       'rootIndex=' + best.rootIndex,
+      'ownerDistance=' + (typeof best.ownerDistance === 'number' ? best.ownerDistance : 'n/a'),
       'url=' + best.url.substring(0, 140),
     );
   }
@@ -557,7 +607,7 @@ function extractFromVectorImage(html) {
   return best.url;
 }
 
-function extractFromLicdnRegex(html) {
+function extractFromLicdnRegex(html, slug) {
   // LinkedIn embeds preload JSON inside <code> elements with HTML-entity-
   // escaped delimiters. The original implementation matched before decoding,
   // using a char class that excluded raw `"` but not `&`, so the regex ran
@@ -631,6 +681,20 @@ function extractFromLicdnRegex(html) {
     }
   }
 
+  // Owner-proximity gating: when the page embeds multiple profiles (the
+  // viewer's own nav photo plus the target profile), require each candidate
+  // URL to appear near the target's publicIdentifier. Without this, we'd
+  // silently return whichever signed URL happens to match first.
+  var ownerOffsets = slug ? findOwnerOffsets(decoded, slug) : [];
+  if (slug && ownerOffsets.length === 0) {
+    if (DEBUG_VERBOSE) {
+      console.warn(
+        '[reknown-ext] licdn-regex: no "publicIdentifier":"' + slug + '" in HTML — refusing to guess',
+      );
+    }
+    return null;
+  }
+
   // Score each match. A valid signed LinkedIn photo URL is 200+ chars and
   // contains expiry/signature params (?e=…&v=…&t=…). Template URLs from
   // LinkedIn's JS bundles are ~85 chars with no query string.
@@ -638,6 +702,10 @@ function extractFromLicdnRegex(html) {
   var bestScore = -1;
   for (var pi = 0; pi < allPhotoMatches.length; pi++) {
     var candidate = allPhotoMatches[pi][0];
+    if (slug) {
+      var dist = nearestOwnerDistance(allPhotoMatches[pi].index, ownerOffsets);
+      if (dist > OWNER_PROXIMITY_BYTES) continue;
+    }
     var score = 0;
     if (candidate.length > 100) score += 10;
     if (candidate.includes('&v=') && candidate.includes('&t=')) score += 10;
@@ -680,12 +748,17 @@ function extractFromLicdnRegex(html) {
   }
 
   // Fallback: any licdn image URL, but explicitly skip background banners.
-  // Same matchAll approach — skip truncated/template URLs.
+  // Same matchAll approach — skip truncated/template URLs. Also gate by
+  // owner proximity when a slug is available, for the same reason as above.
   const genericRe = new RegExp('https://media\\.licdn\\.com/dms/image/' + URL_BODY + '+', 'g');
   const allGenericMatches = [...decoded.matchAll(genericRe)];
   for (var gi = 0; gi < allGenericMatches.length; gi++) {
     var gUrl = allGenericMatches[gi][0];
     if (/profile-displaybackgroundimage/.test(gUrl)) continue;
+    if (slug) {
+      var gDist = nearestOwnerDistance(allGenericMatches[gi].index, ownerOffsets);
+      if (gDist > OWNER_PROXIMITY_BYTES) continue;
+    }
     if (gUrl.length > 100 && gUrl.includes('&v=')) {
       if (DEBUG_VERBOSE) {
         console.log(
@@ -738,7 +811,50 @@ function isDefaultAvatar(url) {
   return DEFAULT_AVATAR_MARKERS.some((m) => lower.includes(m));
 }
 
-function extractPhotoUrl(html) {
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Find every byte-offset in `decoded` where the target profile's
+// publicIdentifier appears. LinkedIn embeds this inside each miniProfile
+// object that owns a VectorImage photo, so the target person's photo
+// rootUrl is the one whose offset is closest to one of these matches.
+//
+// Returns [] if slug is empty/missing, or if the HTML has no matches (e.g.
+// LinkedIn returned a logged-out shell that only contains the viewer's own
+// photo). Callers treat an empty result from a non-empty slug as a signal
+// to FAIL extraction rather than silently pick the wrong person.
+function findOwnerOffsets(decoded, slug) {
+  if (!slug) return [];
+  const offsets = [];
+  const re = new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(slug) + '"', 'gi');
+  let m;
+  while ((m = re.exec(decoded)) !== null) {
+    offsets.push(m.index);
+    // Prevent pathological zero-length matches from looping forever.
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  return offsets;
+}
+
+// Window around each publicIdentifier occurrence inside which a rootUrl is
+// considered to belong to that profile. LinkedIn's miniProfile JSON objects
+// for a single profile's photo + publicIdentifier typically sit within a
+// few KB of each other; 8 KB gives comfortable headroom without matching
+// across unrelated profiles in the page.
+const OWNER_PROXIMITY_BYTES = 8000;
+
+function nearestOwnerDistance(offset, ownerOffsets) {
+  if (!ownerOffsets || ownerOffsets.length === 0) return Infinity;
+  let best = Infinity;
+  for (let i = 0; i < ownerOffsets.length; i++) {
+    const d = Math.abs(offset - ownerOffsets[i]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function extractPhotoUrl(html, slug) {
   // Upfront HTML-landscape snapshot: single-line view of every interesting
   // marker so we can correlate strategy outcomes with the underlying page
   // shape without having to parse other logs.
@@ -775,7 +891,10 @@ function extractPhotoUrl(html) {
   for (const [name, fn] of strategies) {
     const t0 = Date.now();
     try {
-      const url = fn(html);
+      // All strategy fns accept (html, slug); most ignore the slug, but
+      // vector-image and licdn-regex use it to pick the target's rootUrl
+      // rather than whichever one happens to appear first in the page.
+      const url = fn(html, slug);
       const dt = Date.now() - t0;
       if (url && !isDefaultAvatar(url)) {
         console.log('[reknown-ext] photo extracted via', name, 'in', dt + 'ms');
@@ -868,6 +987,18 @@ async function enrichOne(person) {
   }
   if (!LINKEDIN_PROFILE_RE.test(url)) {
     return { status: 'error', error: 'invalid_url' };
+  }
+  // publicIdentifier slug from the profile URL path. We use this inside
+  // extractPhotoUrl to disambiguate the target's photo from the viewer's
+  // own nav/menu photo when LinkedIn serves HTML containing both.
+  const slugMatch = url.match(/\/in\/([^\s/?#]+)/i);
+  const slug = slugMatch ? decodeURIComponent(slugMatch[1]) : '';
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] enrichOne slug extracted',
+      'slug=' + slug,
+      'rawSegment=' + (slugMatch ? slugMatch[1] : ''),
+    );
   }
   const fetchStart = Date.now();
   let pageRes;
@@ -969,7 +1100,7 @@ async function enrichOne(person) {
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     return { status: 'error', error: 'login_wall', fatal: true };
   }
-  const photoUrl = extractPhotoUrl(html);
+  const photoUrl = extractPhotoUrl(html, slug);
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] extractPhotoUrl result:',
@@ -1062,7 +1193,11 @@ async function enrichOne(person) {
         'overMessageCap=' + (dataUrl.length > 60 * 1024 * 1024),
       );
     }
-    return { status: 'success', photoDataUrl: dataUrl };
+    // Return the raw licdn URL alongside the base64 data URL so the web
+    // app can persist it on the person. Having the original URL stored
+    // means the "Edit person" form has something to show in the Photo URL
+    // field instead of appearing blank after a successful enrichment.
+    return { status: 'success', photoDataUrl: dataUrl, photoUrl: photoUrl };
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] resize threw', String(err));
     return { status: 'error', error: 'fetch_failed' };
@@ -1145,6 +1280,7 @@ async function runBatch(requestId, people, tabId) {
           personName: person.name,
           status: 'success',
           photoDataUrl: result.photoDataUrl,
+          photoUrl: result.photoUrl,
           index: i,
           total: people.length,
         });

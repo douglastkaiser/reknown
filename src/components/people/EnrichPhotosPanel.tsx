@@ -33,7 +33,15 @@ export function EnrichPhotosPanel({
 }) {
   const { extensionAvailable } = useExtensionDetection();
   const enrichment = usePhotoEnrichment({
-    onPhotoFetched: (id, photoDataUrl) => onUpdate(id, { photoDataUrl }),
+    onPhotoFetched: (id, photoDataUrl, photoUrl) => {
+      // Persist the raw licdn URL alongside the base64 data URL when the
+      // extension provides it, so the "Edit person" form has something to
+      // show in the Photo URL field instead of appearing blank.
+      const updates: Partial<Person> = photoUrl
+        ? { photoDataUrl, photoUrl }
+        : { photoDataUrl };
+      return onUpdate(id, updates);
+    },
   });
 
   const eligible = useMemo(
