@@ -1,8 +1,21 @@
 export type CardType = 'name_to_face' | 'face_to_name';
 
+export type EnrichMethod = 'linkedin' | 'roster_url';
+
+export interface Category {
+  id: string;
+  scope?: string;
+  name: string;
+  enrichMethod: EnrichMethod;
+  rosterUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface Person {
   id: string;
   name: string;
+  categoryId: string;
   nicknames?: string[];
   scope?: string;
   similarity?: {

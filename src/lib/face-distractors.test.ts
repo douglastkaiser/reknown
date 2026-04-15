@@ -9,6 +9,7 @@ function makePerson(overrides: Partial<Person> & Pick<Person, 'id' | 'name'>): P
   return {
     id,
     name,
+    categoryId: 'test-category',
     createdAt: NOW,
     updatedAt: NOW,
     ...rest,

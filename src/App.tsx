@@ -5,6 +5,9 @@ import { LoginPage } from './components/auth/LoginPage';
 import { PeopleForm } from './components/people/PeopleForm';
 import { PeopleList } from './components/people/PeopleList';
 import { EnrichPhotosPanel } from './components/people/EnrichPhotosPanel';
+import { CategoryTabs } from './components/people/CategoryTabs';
+import { CategoryHeader } from './components/people/CategoryHeader';
+import { NewCategoryDialog } from './components/people/NewCategoryDialog';
 import { ReviewSessionFlow } from './components/review/ReviewSessionFlow';
 import { CsvUpload } from './components/import/CsvUpload';
 import { CsvPaste } from './components/import/CsvPaste';
@@ -13,10 +16,11 @@ import { StatsPage } from './components/stats/StatsPage';
 import { AboutPage } from './pages/AboutPage';
 import { useAuth } from './contexts/AuthContext';
 import { usePeople } from './hooks/usePeople';
+import { useCategories } from './hooks/useCategories';
 import { useStats } from './hooks/useStats';
 import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
 import { getSettings } from './lib/storage';
-import type { CsvPersonRow, Settings } from './types';
+import type { Category, CsvPersonRow, Settings } from './types';
 
 function useAppSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -26,7 +30,13 @@ function useAppSettings() {
   return { settings, setSettings };
 }
 
-function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople> }) {
+function LinkedInImportSection({
+  category,
+  onImported,
+}: {
+  category: Category;
+  onImported: () => Promise<void> | void;
+}) {
   const [rows, setRows] = useState<CsvPersonRow[]>([]);
   const [showImport, setShowImport] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -46,10 +56,11 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
     try {
       const { seedPeople } = await import('./lib/storage');
       await seedPeople(
-        rows.map((row) => ({ ...row, tags: [] })),
+        rows,
+        category.id,
         (done, total) => setProgress({ done, total }),
       );
-      await peopleState.refresh();
+      await onImported();
       setRows([]);
       setShowImport(false);
     } catch (err) {
@@ -62,8 +73,6 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
 
   return (
     <div className="space-y-3">
-      <PeopleForm onSave={peopleState.addPerson} />
-
       <div className="flex gap-2">
         <button
           id="import-csv-toggle"
@@ -89,16 +98,159 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
           ) : null}
         </div>
       ) : null}
+    </div>
+  );
+}
 
-      <EnrichPhotosPanel
-        people={peopleState.people}
-        onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
+function RosterUrlImportSection() {
+  return (
+    <div className="card space-y-2">
+      <h3 className="font-semibold">Roster URL import</h3>
+      <p className="text-xs text-muted">
+        Coming soon. Paste a URL like{' '}
+        <code className="text-text">https://www.patriots.com/team/players-roster/</code> or{' '}
+        <code className="text-text">https://www.vastspace.com/team</code> and we'll import the
+        listed people into this section.
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="url"
+          disabled
+          placeholder="Paste roster URL (coming soon)"
+          className="flex-1 cursor-not-allowed rounded-lg border border-border bg-bg px-3 py-2 text-sm opacity-60"
+        />
+        <button
+          type="button"
+          disabled
+          className="cursor-not-allowed rounded-xl border border-border bg-white/5 px-3 py-2 text-sm text-muted opacity-60"
+        >
+          Import
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PeoplePage({
+  peopleState,
+  categoriesState,
+}: {
+  peopleState: ReturnType<typeof usePeople>;
+  categoriesState: ReturnType<typeof useCategories>;
+}) {
+  const { categories, addCategory, removeCategory } = categoriesState;
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  // Keep activeId in sync when categories list changes.
+  useEffect(() => {
+    if (categories.length === 0) {
+      if (activeId !== null) setActiveId(null);
+      return;
+    }
+    if (!activeId || !categories.some((c) => c.id === activeId)) {
+      setActiveId(categories[0].id);
+    }
+  }, [categories, activeId]);
+
+  const activeCategory = useMemo(
+    () => categories.find((c) => c.id === activeId) ?? null,
+    [categories, activeId],
+  );
+
+  const peopleInCategory = useMemo(
+    () =>
+      activeCategory
+        ? peopleState.people.filter((p) => p.categoryId === activeCategory.id)
+        : [],
+    [peopleState.people, activeCategory],
+  );
+
+  async function handleCreate(input: { name: string; enrichMethod: Category['enrichMethod'] }) {
+    const created = await addCategory(input);
+    setActiveId(created.id);
+    setDialogOpen(false);
+  }
+
+  async function handleDelete(id: string) {
+    await removeCategory(id);
+    await peopleState.refresh();
+  }
+
+  if (categoriesState.loading && categories.length === 0) {
+    return <div className="card text-sm text-muted">Loading…</div>;
+  }
+
+  if (categories.length === 0) {
+    return (
+      <div className="space-y-3">
+        <div className="card space-y-3">
+          <h2 className="text-lg font-semibold">Create your first section</h2>
+          <p className="text-sm text-muted">
+            Group the people you want to remember into sections like{' '}
+            <strong>LinkedIn</strong> or <strong>Patriots</strong>. Each section has its own
+            import and enrichment method.
+          </p>
+          <button
+            type="button"
+            onClick={() => setDialogOpen(true)}
+            className="rounded-xl border border-accent bg-accent/20 px-3 py-2 text-sm font-medium text-text hover:bg-accent/30"
+          >
+            + New section
+          </button>
+        </div>
+        <NewCategoryDialog
+          open={dialogOpen}
+          onCancel={() => setDialogOpen(false)}
+          onCreate={handleCreate}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <CategoryTabs
+        categories={categories}
+        activeId={activeId}
+        onSelect={setActiveId}
+        onCreate={() => setDialogOpen(true)}
       />
 
-      <PeopleList
-        people={peopleState.people}
-        onDelete={(id) => void peopleState.removePerson(id)}
-        onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
+      {activeCategory ? (
+        <>
+          <CategoryHeader
+            category={activeCategory}
+            peopleCount={peopleInCategory.length}
+            onDelete={handleDelete}
+          />
+
+          <PeopleForm categoryId={activeCategory.id} onSave={peopleState.addPerson} />
+
+          {activeCategory.enrichMethod === 'linkedin' ? (
+            <>
+              <LinkedInImportSection category={activeCategory} onImported={peopleState.refresh} />
+              <EnrichPhotosPanel
+                people={peopleInCategory}
+                onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
+              />
+            </>
+          ) : (
+            <RosterUrlImportSection />
+          )}
+
+          <PeopleList
+            people={peopleInCategory}
+            onDelete={(id) => void peopleState.removePerson(id)}
+            onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
+          />
+        </>
+      ) : null}
+
+      <NewCategoryDialog
+        open={dialogOpen}
+        onCancel={() => setDialogOpen(false)}
+        onCreate={handleCreate}
       />
     </div>
   );
@@ -106,6 +258,7 @@ function PeoplePage({ peopleState }: { peopleState: ReturnType<typeof usePeople>
 
 function AuthenticatedApp() {
   const peopleState = usePeople();
+  const categoriesState = useCategories();
   const statsState = useStats();
   const { settings } = useAppSettings();
 
@@ -113,7 +266,10 @@ function AuthenticatedApp() {
     <AppShell>
       <Routes>
         <Route path="/review" element={<ReviewSessionFlow people={peopleState.people} settings={settings} />} />
-        <Route path="/people" element={<PeoplePage peopleState={peopleState} />} />
+        <Route
+          path="/people"
+          element={<PeoplePage peopleState={peopleState} categoriesState={categoriesState} />}
+        />
         <Route
           path="/stats"
           element={<StatsPage stats={statsState.stats} reviewMetrics={statsState.reviewMetrics} />}
