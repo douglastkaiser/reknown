@@ -2,6 +2,7 @@ import { openDB, type DBSchema } from 'idb';
 import type {
   AccuracyMetric,
   AppStats,
+  Category,
   Person,
   ReviewCard,
   ReviewEvent,
@@ -11,7 +12,7 @@ import type {
 } from '../types';
 
 const DB_NAME = 'reknown-db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let activeScope: string | null = null;
 
@@ -50,7 +51,12 @@ interface ReknownDB extends DBSchema {
   people: {
     key: string;
     value: Person;
-    indexes: { 'by-updatedAt': number; 'by-name': string };
+    indexes: { 'by-updatedAt': number; 'by-name': string; 'by-categoryId': string };
+  };
+  categories: {
+    key: string;
+    value: Category;
+    indexes: { 'by-name': string };
   };
   stats: {
     key: string;
@@ -103,6 +109,20 @@ const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
       void tx.objectStore('reviewEvents').clear();
       void tx.objectStore('sessionSummaries').clear();
     }
+
+    if (oldVersion < 4) {
+      // Categories were introduced and Person now requires a categoryId.
+      // Existing rows would be orphaned so clear the people store; users
+      // will re-import into named categories.
+      const categories = db.createObjectStore('categories', { keyPath: 'id' });
+      categories.createIndex('by-name', 'name');
+
+      const peopleStore = tx.objectStore('people');
+      if (!peopleStore.indexNames.contains('by-categoryId')) {
+        peopleStore.createIndex('by-categoryId', 'categoryId');
+      }
+      void peopleStore.clear();
+    }
   },
 });
 
@@ -114,6 +134,67 @@ export async function listPeople(): Promise<Person[]> {
   const db = await dbPromise;
   const all = await db.getAllFromIndex('people', 'by-name');
   return inScope(all);
+}
+
+export async function listPeopleByCategory(categoryId: string): Promise<Person[]> {
+  const all = await listPeople();
+  return all.filter((p) => p.categoryId === categoryId);
+}
+
+export async function listCategories(): Promise<Category[]> {
+  const db = await dbPromise;
+  const all = await db.getAllFromIndex('categories', 'by-name');
+  return inScope(all);
+}
+
+export async function getCategory(categoryId: string): Promise<Category | undefined> {
+  const db = await dbPromise;
+  const row = await db.get('categories', categoryId);
+  if (!row || row.scope !== activeScope) return undefined;
+  return row;
+}
+
+export async function createCategory(
+  input: Omit<Category, 'id' | 'createdAt' | 'updatedAt'>,
+): Promise<Category> {
+  const scope = requireScope();
+  const now = Date.now();
+  const category: Category = { ...input, id: id(), createdAt: now, updatedAt: now, scope };
+  const db = await dbPromise;
+  await db.put('categories', category);
+  return category;
+}
+
+export async function updateCategory(
+  categoryId: string,
+  updates: Partial<Omit<Category, 'id' | 'createdAt'>>,
+): Promise<Category | null> {
+  const db = await dbPromise;
+  const current = await db.get('categories', categoryId);
+  if (!current || current.scope !== activeScope) return null;
+  const next: Category = { ...current, ...updates, updatedAt: Date.now(), scope: current.scope };
+  await db.put('categories', next);
+  return next;
+}
+
+export async function deleteCategory(categoryId: string): Promise<void> {
+  const db = await dbPromise;
+  const tx = db.transaction(['categories', 'people'], 'readwrite');
+  const categoryStore = tx.objectStore('categories');
+  const peopleStore = tx.objectStore('people');
+  const current = await categoryStore.get(categoryId);
+  if (!current || current.scope !== activeScope) {
+    await tx.done;
+    return;
+  }
+  await categoryStore.delete(categoryId);
+  const allPeople = await peopleStore.getAll();
+  for (const person of allPeople) {
+    if (person.scope === activeScope && person.categoryId === categoryId) {
+      await peopleStore.delete(person.id);
+    }
+  }
+  await tx.done;
 }
 
 export async function getPerson(personId: string): Promise<Person | undefined> {
@@ -150,8 +231,11 @@ export async function deletePerson(personId: string): Promise<void> {
 
 export async function clearScope(scope: string): Promise<void> {
   const db = await dbPromise;
-  const tx = db.transaction(['people', 'stats', 'reviewEvents', 'sessionSummaries'], 'readwrite');
-  for (const storeName of ['people', 'stats', 'reviewEvents', 'sessionSummaries'] as const) {
+  const tx = db.transaction(
+    ['people', 'categories', 'stats', 'reviewEvents', 'sessionSummaries'],
+    'readwrite',
+  );
+  for (const storeName of ['people', 'categories', 'stats', 'reviewEvents', 'sessionSummaries'] as const) {
     const store = tx.objectStore(storeName);
     const rows = await store.getAll();
     for (const row of rows as Array<{ scope?: string; id: string | number }>) {
@@ -230,8 +314,9 @@ export async function updateStats(updates: Partial<Omit<AppStats, 'id' | 'update
 
 export async function exportJson(): Promise<string> {
   const db = await dbPromise;
-  const [people, stats, settings, reviewEvents, sessionSummaries] = await Promise.all([
+  const [people, categories, stats, settings, reviewEvents, sessionSummaries] = await Promise.all([
     db.getAll('people'),
+    db.getAll('categories'),
     db.get('stats', 'app'),
     db.get('settings', 'app'),
     db.getAllFromIndex('reviewEvents', 'by-timestamp'),
@@ -240,6 +325,7 @@ export async function exportJson(): Promise<string> {
   return JSON.stringify({
     exportedAt: new Date().toISOString(),
     people,
+    categories,
     stats,
     settings,
     reviewEvents,
@@ -248,12 +334,13 @@ export async function exportJson(): Promise<string> {
 }
 
 export async function seedPeople(
-  records: Array<Omit<Person, 'id' | 'createdAt' | 'updatedAt'>>,
+  records: Array<Omit<Person, 'id' | 'categoryId' | 'createdAt' | 'updatedAt'>>,
+  categoryId: string,
   onProgress?: (done: number, total: number) => void,
 ): Promise<Person[]> {
   const created: Person[] = [];
   for (let i = 0; i < records.length; i++) {
-    created.push(await createPerson(records[i]));
+    created.push(await createPerson({ ...records[i], categoryId }));
     onProgress?.(i + 1, records.length);
   }
   return created;

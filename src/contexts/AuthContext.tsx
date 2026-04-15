@@ -1,7 +1,13 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
-import { clearScope, listPeople, seedPeople, setActiveScope } from '../lib/storage';
+import {
+  clearScope,
+  createCategory,
+  listPeople,
+  seedPeople,
+  setActiveScope,
+} from '../lib/storage';
 
 interface AuthState {
   user: User | null;
@@ -53,7 +59,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const existing = await listPeople();
     if (existing.length === 0) {
       const { starterPeople } = await import('../lib/starter-people');
-      await seedPeople(starterPeople.map((row) => ({ ...row, tags: [] })));
+      const defaultCategory = await createCategory({
+        name: 'LinkedIn',
+        enrichMethod: 'linkedin',
+      });
+      await seedPeople(starterPeople, defaultCategory.id);
     }
     setIsGuest(true);
   }

@@ -4,7 +4,13 @@ import { Button } from '../common/Button';
 import { PhotoUpload } from './PhotoUpload';
 import { capitalizeName, parseNicknames } from '../../lib/text';
 
-export function PeopleForm({ onSave }: { onSave: (input: Omit<Person, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void> }) {
+export function PeopleForm({
+  categoryId,
+  onSave,
+}: {
+  categoryId: string;
+  onSave: (input: Omit<Person, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
+}) {
   const [name, setName] = useState('');
   const [nicknames, setNicknames] = useState('');
   const [headline, setHeadline] = useState('');
@@ -18,13 +24,13 @@ export function PeopleForm({ onSave }: { onSave: (input: Omit<Person, 'id' | 'cr
     if (!name.trim()) return;
     await onSave({
       name: capitalizeName(name),
+      categoryId,
       nicknames: parseNicknames(nicknames),
       headline,
       company,
       photoDataUrl: photoDataUrl || undefined,
       photoUrl: photoUrl.trim() || undefined,
       linkedinUrl: linkedinUrl.trim() || undefined,
-      tags: [],
     });
     setName('');
     setNicknames('');
