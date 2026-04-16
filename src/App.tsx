@@ -5,6 +5,7 @@ import { LoginPage } from './components/auth/LoginPage';
 import { PeopleForm } from './components/people/PeopleForm';
 import { PeopleList } from './components/people/PeopleList';
 import { EnrichPhotosPanel } from './components/people/EnrichPhotosPanel';
+import { EspnRosterPanel } from './components/people/EspnRosterPanel';
 import { CategoryTabs } from './components/people/CategoryTabs';
 import { CategoryHeader } from './components/people/CategoryHeader';
 import { NewCategoryDialog } from './components/people/NewCategoryDialog';
@@ -19,7 +20,8 @@ import { usePeople } from './hooks/usePeople';
 import { useCategories } from './hooks/useCategories';
 import { useStats } from './hooks/useStats';
 import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
-import { getSettings } from './lib/storage';
+import { fetchRoster, rosterToPersonRecords, SPORTS } from './lib/espn';
+import { getSettings, seedPeople } from './lib/storage';
 import type { Category, CsvPersonRow, Settings } from './types';
 
 function useAppSettings() {
@@ -102,35 +104,6 @@ function LinkedInImportSection({
   );
 }
 
-function RosterUrlImportSection() {
-  return (
-    <div className="card space-y-2">
-      <h3 className="font-semibold">Roster URL import</h3>
-      <p className="text-xs text-muted">
-        Coming soon. Paste a URL like{' '}
-        <code className="text-text">https://www.patriots.com/team/players-roster/</code> or{' '}
-        <code className="text-text">https://www.vastspace.com/team</code> and we'll import the
-        listed people into this section.
-      </p>
-      <div className="flex gap-2">
-        <input
-          type="url"
-          disabled
-          placeholder="Paste roster URL (coming soon)"
-          className="flex-1 cursor-not-allowed rounded-lg border border-border bg-bg px-3 py-2 text-sm opacity-60"
-        />
-        <button
-          type="button"
-          disabled
-          className="cursor-not-allowed rounded-xl border border-border bg-white/5 px-3 py-2 text-sm text-muted opacity-60"
-        >
-          Import
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function PeoplePage({
   peopleState,
   categoriesState,
@@ -166,10 +139,39 @@ function PeoplePage({
     [peopleState.people, activeCategory],
   );
 
-  async function handleCreate(input: { name: string; enrichMethod: Category['enrichMethod'] }) {
+  const [espnImporting, setEspnImporting] = useState(false);
+
+  async function handleCreate(input: Omit<Category, 'id' | 'createdAt' | 'updatedAt'>) {
     const created = await addCategory(input);
     setActiveId(created.id);
     setDialogOpen(false);
+
+    if (
+      input.enrichMethod === 'espn_roster' &&
+      input.espnSport &&
+      input.espnLeague &&
+      input.espnTeamId
+    ) {
+      const sport = SPORTS.find(
+        (s) => s.slug === input.espnSport && s.leagueSlug === input.espnLeague,
+      );
+      if (sport) {
+        setEspnImporting(true);
+        try {
+          const players = await fetchRoster(sport, input.espnTeamId);
+          const records = rosterToPersonRecords(
+            players,
+            input.espnTeamName ?? created.name,
+          );
+          await seedPeople(records, created.id);
+          await peopleState.refresh();
+        } catch (err) {
+          console.error('[espn] auto-import failed', err);
+        } finally {
+          setEspnImporting(false);
+        }
+      }
+    }
   }
 
   async function handleDelete(id: string) {
@@ -235,9 +237,17 @@ function PeoplePage({
                 onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
               />
             </>
-          ) : (
-            <RosterUrlImportSection />
-          )}
+          ) : activeCategory.enrichMethod === 'espn_roster' ? (
+            <EspnRosterPanel
+              category={activeCategory}
+              people={peopleInCategory}
+              onImported={peopleState.refresh}
+            />
+          ) : null}
+
+          {espnImporting ? (
+            <div className="card text-sm text-muted">Importing roster from ESPN…</div>
+          ) : null}
 
           <PeopleList
             people={peopleInCategory}

@@ -1,13 +1,16 @@
 export type CardType = 'name_to_face' | 'face_to_name';
 
-export type EnrichMethod = 'linkedin' | 'roster_url';
+export type EnrichMethod = 'linkedin' | 'espn_roster';
 
 export interface Category {
   id: string;
   scope?: string;
   name: string;
   enrichMethod: EnrichMethod;
-  rosterUrl?: string;
+  espnSport?: string;
+  espnLeague?: string;
+  espnTeamId?: string;
+  espnTeamName?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -29,9 +32,33 @@ export interface Person {
   photoDataUrl?: string;
   photoUrl?: string;
   linkedinUrl?: string;
+  espnPlayerId?: string;
   tags?: string[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface EspnSport {
+  slug: string;
+  leagueSlug: string;
+  displayName: string;
+}
+
+export interface EspnTeam {
+  id: string;
+  displayName: string;
+  abbreviation: string;
+  slug: string;
+  logo?: string;
+}
+
+export interface EspnPlayer {
+  id: string;
+  displayName: string;
+  fullName: string;
+  position: { abbreviation: string; name: string };
+  jersey?: string;
+  headshot?: { href: string };
 }
 
 export interface SRSData {

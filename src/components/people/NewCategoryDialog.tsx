@@ -1,6 +1,16 @@
 import { useEffect, useState } from 'react';
-import type { EnrichMethod } from '../../types';
+import type { Category, EnrichMethod, EspnSport, EspnTeam } from '../../types';
 import { Button } from '../common/Button';
+import { EspnTeamSelector } from './EspnTeamSelector';
+
+type CreateInput = {
+  name: string;
+  enrichMethod: EnrichMethod;
+  espnSport?: string;
+  espnLeague?: string;
+  espnTeamId?: string;
+  espnTeamName?: string;
+};
 
 export function NewCategoryDialog({
   open,
@@ -9,16 +19,23 @@ export function NewCategoryDialog({
 }: {
   open: boolean;
   onCancel: () => void;
-  onCreate: (input: { name: string; enrichMethod: EnrichMethod }) => Promise<void> | void;
+  onCreate: (input: Omit<Category, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void> | void;
 }) {
   const [name, setName] = useState('');
+  const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
   const [method, setMethod] = useState<EnrichMethod>('linkedin');
+  const [espnSelection, setEspnSelection] = useState<{
+    sport: EspnSport;
+    team: EspnTeam;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (open) {
       setName('');
+      setNameManuallyEdited(false);
       setMethod('linkedin');
+      setEspnSelection(null);
       setSubmitting(false);
     }
   }, [open]);
@@ -34,12 +51,33 @@ export function NewCategoryDialog({
 
   if (!open) return null;
 
+  function handleEspnSelect(
+    selection: { sport: EspnSport; team: EspnTeam } | null,
+  ) {
+    setEspnSelection(selection);
+    if (selection && !nameManuallyEdited) {
+      setName(selection.team.displayName);
+    }
+  }
+
+  const isEspn = method === 'espn_roster';
+  const canSubmit = isEspn
+    ? !!name.trim() && !!espnSelection && !submitting
+    : !!name.trim() && !submitting;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || submitting) return;
+    if (!canSubmit) return;
     setSubmitting(true);
     try {
-      await onCreate({ name: name.trim(), enrichMethod: method });
+      const input: CreateInput = { name: name.trim(), enrichMethod: method };
+      if (isEspn && espnSelection) {
+        input.espnSport = espnSelection.sport.slug;
+        input.espnLeague = espnSelection.sport.leagueSlug;
+        input.espnTeamId = espnSelection.team.id;
+        input.espnTeamName = espnSelection.team.displayName;
+      }
+      await onCreate(input);
     } finally {
       setSubmitting(false);
     }
@@ -60,19 +98,8 @@ export function NewCategoryDialog({
       >
         <h3 className="text-lg font-semibold text-text">New section</h3>
 
-        <div className="space-y-1">
-          <label className="text-xs text-muted">Name</label>
-          <input
-            autoFocus
-            className="w-full rounded-lg bg-white/5 px-3 py-2 text-sm"
-            placeholder="e.g. LinkedIn, Patriots"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-
         <div className="space-y-2">
-          <label className="text-xs text-muted">Introduction / enrich method</label>
+          <label className="text-xs text-muted">Source</label>
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-white/5 p-3 text-sm">
             <input
               type="radio"
@@ -88,33 +115,53 @@ export function NewCategoryDialog({
               </span>
             </span>
           </label>
-          <label className="flex cursor-not-allowed items-start gap-2 rounded-lg border border-border bg-white/5 p-3 text-sm opacity-60">
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-white/5 p-3 text-sm">
             <input
               type="radio"
               name="enrichMethod"
-              checked={method === 'roster_url'}
-              onChange={() => setMethod('roster_url')}
-              disabled
+              checked={isEspn}
+              onChange={() => setMethod('espn_roster')}
               className="mt-0.5"
             />
             <span>
-              <span className="font-medium text-text">
-                Roster URL <span className="text-xs text-muted">(coming soon)</span>
-              </span>
+              <span className="font-medium text-text">ESPN Roster</span>
               <span className="block text-xs text-muted">
-                Paste a URL like https://www.patriots.com/team/players-roster/ and we'll import the
-                listed people.
+                Pick a sport and team to import the full roster with player photos from ESPN.
               </span>
             </span>
           </label>
+
+          {isEspn ? (
+            <div className="pl-6">
+              <EspnTeamSelector onSelect={handleEspnSelect} />
+            </div>
+          ) : null}
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-xs text-muted">Section name</label>
+          <input
+            autoFocus={!isEspn}
+            className="w-full rounded-lg bg-white/5 px-3 py-2 text-sm"
+            placeholder={isEspn ? 'Auto-filled from team' : 'e.g. LinkedIn, Work'}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              setNameManuallyEdited(true);
+            }}
+          />
         </div>
 
         <div className="flex justify-end gap-2">
           <Button type="button" className="bg-white/5" onClick={onCancel}>
             Cancel
           </Button>
-          <Button type="submit" disabled={!name.trim() || submitting}>
-            {submitting ? 'Creating…' : 'Create'}
+          <Button type="submit" disabled={!canSubmit}>
+            {submitting
+              ? 'Creating…'
+              : isEspn
+                ? 'Create & Import Roster'
+                : 'Create'}
           </Button>
         </div>
       </form>
