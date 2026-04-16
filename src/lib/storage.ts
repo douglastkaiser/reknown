@@ -10,9 +10,23 @@ import type {
   SessionSummary,
   Settings,
 } from '../types';
+import {
+  getSyncHandlers,
+  isApplyingRemote,
+  isSyncActive,
+  withApplyingRemote,
+} from './sync-bus';
 
 const DB_NAME = 'reknown-db';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
+
+function canPush(): boolean {
+  if (!isSyncActive() || isApplyingRemote()) return false;
+  const handlers = getSyncHandlers();
+  if (!handlers) return false;
+  const uid = handlers.syncedUid();
+  return uid != null && activeScope === `u:${uid}`;
+}
 
 let activeScope: string | null = null;
 
@@ -69,7 +83,12 @@ interface ReknownDB extends DBSchema {
   reviewEvents: {
     key: number;
     value: ReviewEvent;
-    indexes: { 'by-timestamp': number; 'by-cardType': string; 'by-mode': string };
+    indexes: {
+      'by-timestamp': number;
+      'by-cardType': string;
+      'by-mode': string;
+      'by-remoteId': string;
+    };
   };
   sessionSummaries: {
     key: string;
@@ -123,6 +142,15 @@ const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
       }
       void peopleStore.clear();
     }
+
+    if (oldVersion < 5) {
+      // Cloud sync needs a stable string id to correlate IDB review events
+      // with Firestore docs, alongside the existing numeric autoIncrement key.
+      const eventsStore = tx.objectStore('reviewEvents');
+      if (!eventsStore.indexNames.contains('by-remoteId')) {
+        eventsStore.createIndex('by-remoteId', 'remoteId');
+      }
+    }
   },
 });
 
@@ -162,6 +190,7 @@ export async function createCategory(
   const category: Category = { ...input, id: id(), createdAt: now, updatedAt: now, scope };
   const db = await dbPromise;
   await db.put('categories', category);
+  if (canPush()) getSyncHandlers()?.pushCategory(category);
   return category;
 }
 
@@ -174,6 +203,7 @@ export async function updateCategory(
   if (!current || current.scope !== activeScope) return null;
   const next: Category = { ...current, ...updates, updatedAt: Date.now(), scope: current.scope };
   await db.put('categories', next);
+  if (canPush()) getSyncHandlers()?.pushCategory(next);
   return next;
 }
 
@@ -188,13 +218,22 @@ export async function deleteCategory(categoryId: string): Promise<void> {
     return;
   }
   await categoryStore.delete(categoryId);
+  const cascadedPersonIds: string[] = [];
   const allPeople = await peopleStore.getAll();
   for (const person of allPeople) {
     if (person.scope === activeScope && person.categoryId === categoryId) {
       await peopleStore.delete(person.id);
+      cascadedPersonIds.push(person.id);
     }
   }
   await tx.done;
+  if (canPush()) {
+    const handlers = getSyncHandlers();
+    handlers?.pushDelete('categories', categoryId);
+    for (const personId of cascadedPersonIds) {
+      handlers?.pushDelete('people', personId);
+    }
+  }
 }
 
 export async function getPerson(personId: string): Promise<Person | undefined> {
@@ -210,6 +249,7 @@ export async function createPerson(input: Omit<Person, 'id' | 'createdAt' | 'upd
   const person: Person = { ...input, id: id(), createdAt: now, updatedAt: now, scope };
   const db = await dbPromise;
   await db.put('people', person);
+  if (canPush()) getSyncHandlers()?.pushPerson(person);
   return person;
 }
 
@@ -219,6 +259,7 @@ export async function updatePerson(personId: string, updates: Partial<Omit<Perso
   if (!current || current.scope !== activeScope) return null;
   const next: Person = { ...current, ...updates, updatedAt: Date.now(), scope: current.scope };
   await db.put('people', next);
+  if (canPush()) getSyncHandlers()?.pushPerson(next);
   return next;
 }
 
@@ -227,6 +268,7 @@ export async function deletePerson(personId: string): Promise<void> {
   const current = await db.get('people', personId);
   if (!current || current.scope !== activeScope) return;
   await db.delete('people', personId);
+  if (canPush()) getSyncHandlers()?.pushDelete('people', personId);
 }
 
 export async function clearScope(scope: string): Promise<void> {
@@ -278,6 +320,7 @@ export async function updateSettings(updates: Partial<Omit<Settings, 'id' | 'upd
   const next: Settings = { ...current, ...updates, id: 'app', updatedAt: Date.now() };
   const db = await dbPromise;
   await db.put('settings', next);
+  if (canPush()) getSyncHandlers()?.pushSettings(next);
   return next;
 }
 
@@ -380,7 +423,14 @@ export async function recordReviewEvent(
 ): Promise<void> {
   const scope = requireScope();
   const db = await dbPromise;
-  await db.add('reviewEvents', { ...event, scope } as ReviewEvent);
+  // Assign a stable string id up front so the Firestore doc id and the
+  // local numeric autoIncrement key can correlate. `remoteId` may already be
+  // set when this path is invoked from a remote-applied merge; preserve it.
+  const remoteId = event.remoteId ?? id();
+  const withIds: Omit<ReviewEvent, 'id'> = { ...event, remoteId, scope };
+  const numericId = await db.add('reviewEvents', withIds as ReviewEvent);
+  const stored: ReviewEvent = { ...withIds, id: numericId } as ReviewEvent;
+  if (canPush()) getSyncHandlers()?.pushReviewEvent(stored);
   emitMetricsUpdatedEvent();
 }
 
@@ -391,6 +441,7 @@ export async function recordSessionSummary(
   const db = await dbPromise;
   const fullSummary: SessionSummary = { ...summary, id: id(), scope };
   await db.add('sessionSummaries', fullSummary);
+  if (canPush()) getSyncHandlers()?.pushSessionSummary(fullSummary);
   emitMetricsUpdatedEvent();
   return fullSummary;
 }
@@ -439,4 +490,143 @@ export async function getReviewMetrics(now: number = Date.now()): Promise<Review
     trend7d: summarizeAccuracy(events.filter((event) => event.timestamp >= sevenDayCutoff)),
     trend30d: summarizeAccuracy(events.filter((event) => event.timestamp >= thirtyDayCutoff)),
   };
+}
+
+// -----------------------------------------------------------------------------
+// Sync helpers — called only by src/lib/sync.ts
+// -----------------------------------------------------------------------------
+
+/**
+ * Scope-aware reads used for reconciliation. These intentionally do not call
+ * `requireScope()` because the caller drives scope explicitly.
+ */
+export async function listPeopleInScope(scope: string): Promise<Person[]> {
+  const db = await dbPromise;
+  return (await db.getAll('people')).filter((p) => p.scope === scope);
+}
+
+export async function listCategoriesInScope(scope: string): Promise<Category[]> {
+  const db = await dbPromise;
+  return (await db.getAll('categories')).filter((c) => c.scope === scope);
+}
+
+export async function listReviewEventsInScope(scope: string): Promise<ReviewEvent[]> {
+  const db = await dbPromise;
+  return (await db.getAll('reviewEvents')).filter((e) => e.scope === scope);
+}
+
+export async function listSessionSummariesInScope(scope: string): Promise<SessionSummary[]> {
+  const db = await dbPromise;
+  return (await db.getAll('sessionSummaries')).filter((s) => s.scope === scope);
+}
+
+/**
+ * Write a record arriving from Firestore into IndexedDB without echoing
+ * back out as a push. `scope` is always assigned by the caller so remote
+ * data lands in the correct per-user bucket.
+ */
+export async function applyRemotePerson(person: Person): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    await db.put('people', person);
+  });
+}
+
+export async function applyRemoteCategory(category: Category): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    await db.put('categories', category);
+  });
+}
+
+export async function applyRemoteSettings(settings: Settings): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    await db.put('settings', settings);
+  });
+}
+
+export async function applyRemoteSessionSummary(summary: SessionSummary): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    await db.put('sessionSummaries', summary);
+  });
+}
+
+/**
+ * Insert or update a review event from Firestore. Correlation is by the
+ * Firestore-assigned `remoteId`; if no local row has that id yet, add a new
+ * one (IDB will mint a numeric key). Otherwise overwrite in place.
+ */
+export async function applyRemoteReviewEvent(event: Omit<ReviewEvent, 'id'>): Promise<void> {
+  if (!event.remoteId) return;
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    const existing = await db.getFromIndex('reviewEvents', 'by-remoteId', event.remoteId!);
+    if (existing) {
+      await db.put('reviewEvents', { ...event, id: existing.id } as ReviewEvent);
+    } else {
+      await db.add('reviewEvents', event as ReviewEvent);
+    }
+  });
+}
+
+export async function applyRemoteDelete(
+  kind: 'people' | 'categories' | 'sessionSummaries' | 'reviewEvents',
+  id: string,
+): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    if (kind === 'reviewEvents') {
+      const existing = await db.getFromIndex('reviewEvents', 'by-remoteId', id);
+      if (existing) await db.delete('reviewEvents', existing.id);
+    } else {
+      await db.delete(kind, id);
+    }
+  });
+}
+
+/**
+ * Direct, scope-explicit getters used by reconciliation to read single
+ * records without touching `activeScope`.
+ */
+export async function getSettingsDirect(): Promise<Settings | undefined> {
+  const db = await dbPromise;
+  return db.get('settings', 'app');
+}
+
+/**
+ * Stamp a locally-created review event with a Firestore-assigned id so
+ * subsequent pushes and snapshot echoes can correlate it. Does not trigger
+ * a push.
+ */
+export async function setReviewEventRemoteId(numericId: number, remoteId: string): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    const row = await db.get('reviewEvents', numericId);
+    if (!row) return;
+    await db.put('reviewEvents', { ...row, remoteId });
+  });
+}
+
+/**
+ * Rewrite every guest-scoped row to belong to the signed-in user. Used when
+ * the user signed in while running as a guest: we keep their work instead of
+ * discarding it. Ids stay stable so the ensuing reconciliation can dedupe
+ * cleanly against any existing cloud copies.
+ */
+export async function migrateGuestScope(uid: string): Promise<void> {
+  const targetScope = `u:${uid}`;
+  const db = await dbPromise;
+  const stores = ['people', 'categories', 'reviewEvents', 'sessionSummaries'] as const;
+  for (const store of stores) {
+    const tx = db.transaction(store, 'readwrite');
+    const all = await tx.store.getAll();
+    for (const row of all as Array<{ scope?: string; id: string | number }>) {
+      if (row.scope === 'guest') {
+        await tx.store.put({ ...row, scope: targetScope } as never);
+      }
+    }
+    await tx.done;
+  }
 }

@@ -80,6 +80,11 @@ export type ReviewMode = 'typed_guess' | 'multiple_choice';
 
 export interface ReviewEvent {
   id: number;
+  /**
+   * Firestore document id. Present once the event has been reconciled with
+   * cloud sync; used to correlate the numeric IDB key with its remote doc.
+   */
+  remoteId?: string;
   scope?: string;
   cardId: string;
   cardType: CardType;

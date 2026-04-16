@@ -24,6 +24,13 @@ export function usePeople() {
 
   useEffect(() => {
     void refresh();
+    const onRemote = () => {
+      void refresh();
+    };
+    window.addEventListener('reknown:remote-changed', onRemote);
+    return () => {
+      window.removeEventListener('reknown:remote-changed', onRemote);
+    };
   }, [refresh]);
 
   const addPerson = useCallback(async (input: Omit<Person, 'id' | 'createdAt' | 'updatedAt'>) => {

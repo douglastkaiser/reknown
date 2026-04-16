@@ -27,6 +27,13 @@ export function useCategories() {
 
   useEffect(() => {
     void refresh();
+    const onRemote = () => {
+      void refresh();
+    };
+    window.addEventListener('reknown:remote-changed', onRemote);
+    return () => {
+      window.removeEventListener('reknown:remote-changed', onRemote);
+    };
   }, [refresh]);
 
   const addCategory = useCallback(
