@@ -39,6 +39,20 @@ describe('matchHumanNameGuess', () => {
     expect(result.verdict).toBe('almost');
   });
 
+  it('accepts an exact nickname token from a longer name', () => {
+    const result = matchHumanNameGuess('Elle', 'Donnelly (Elle) Carroll');
+
+    expect(result.accepted).toBe(true);
+    expect(result.reason).toBe('partial-high-confidence');
+  });
+
+  it('rejects a single-letter guess for longer names', () => {
+    const result = matchHumanNameGuess('a', 'alex');
+
+    expect(result.accepted).toBe(false);
+    expect(result.verdict).toBe('incorrect');
+  });
+
   it('handles initials and punctuation as acceptable guesses', () => {
     const result = matchHumanNameGuess('J. R. R. Tolkien', 'John Ronald Reuel Tolkien');
 

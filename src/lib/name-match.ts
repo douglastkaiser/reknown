@@ -90,12 +90,16 @@ function tokenSimilarity(a: string | undefined, b: string | undefined): number {
     return 1;
   }
 
+  if (a.length === 1 && b.length === 1) {
+    return 0;
+  }
+
   if (a.length === 1 && b.startsWith(a)) {
-    return 0.95;
+    return 0.72;
   }
 
   if (b.length === 1 && a.startsWith(b)) {
-    return 0.95;
+    return 0.72;
   }
 
   return similarity(a, b);
@@ -169,6 +173,12 @@ export function matchHumanNameGuess(guess: string, target: string): NameMatchRes
     guessTokens[guessTokens.length - 1],
     targetTokens[targetTokens.length - 1],
   );
+  const bestSingleTokenMatch = guessTokens.length === 1
+    ? targetTokens.reduce(
+        (best, targetToken) => Math.max(best, tokenSimilarity(guessTokens[0], targetToken)),
+        0,
+      )
+    : 0;
 
   const boundaryScore = (firstTokenScore + lastTokenScore) / 2;
   const score = Math.min(
@@ -193,6 +203,21 @@ export function matchHumanNameGuess(guess: string, target: string): NameMatchRes
     hasMissingSurname &&
     (firstTokenScore >= PARTIAL_TOKEN_THRESHOLD || lastTokenScore >= PARTIAL_TOKEN_THRESHOLD) &&
     overlap >= PARTIAL_TOKEN_THRESHOLD
+  ) {
+    return {
+      accepted: true,
+      score,
+      reason: 'partial-high-confidence',
+      verdict: 'almost',
+      normalizedGuess,
+      normalizedTarget,
+    };
+  }
+
+  if (
+    hasMissingSurname &&
+    guessTokens[0]?.length >= 3 &&
+    bestSingleTokenMatch >= PARTIAL_TOKEN_THRESHOLD
   ) {
     return {
       accepted: true,
