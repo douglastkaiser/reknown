@@ -11,6 +11,7 @@ export interface Category {
   espnLeague?: string;
   espnTeamId?: string;
   espnTeamName?: string;
+  hiddenFromReview?: boolean;
   createdAt: number;
   updatedAt: number;
 }
