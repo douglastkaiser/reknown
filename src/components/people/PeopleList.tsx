@@ -1,7 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Person } from '../../types';
 import { PersonCard } from './PersonCard';
 import { getPerPersonMetrics, type PersonMetric } from '../../lib/storage';
+
+type SortMode = 'missing_photo_first' | 'alphabetical' | 'random';
+
+function hasPhoto(person: Person) {
+  return Boolean(person.photoDataUrl || person.photoUrl);
+}
+
+function shuffle<T>(items: T[]) {
+  const next = [...items];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
 
 export function PeopleList({
   people,
@@ -13,6 +28,7 @@ export function PeopleList({
   onUpdate?: (id: string, updates: Partial<Person>) => Promise<void> | void;
 }) {
   const [metrics, setMetrics] = useState<Record<string, PersonMetric>>({});
+  const [sortMode, setSortMode] = useState<SortMode>('missing_photo_first');
 
   useEffect(() => {
     let cancelled = false;
@@ -29,8 +45,25 @@ export function PeopleList({
     };
   }, []);
 
+  const sortedPeople = useMemo(() => {
+    if (sortMode === 'random') {
+      return shuffle(people);
+    }
+
+    if (sortMode === 'alphabetical') {
+      return [...people].sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    return [...people].sort((a, b) => {
+      const aHasPhoto = hasPhoto(a);
+      const bHasPhoto = hasPhoto(b);
+      if (aHasPhoto !== bHasPhoto) return aHasPhoto ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [people, sortMode]);
+
   if (!people.length) return <div className="card text-sm text-muted">No people yet.</div>;
-  const missingPhotos = people.filter((p) => !p.photoDataUrl && !p.photoUrl).length;
+  const missingPhotos = people.filter((p) => !hasPhoto(p)).length;
   return (
     <div className="space-y-3">
       {missingPhotos > 0 ? (
@@ -39,7 +72,22 @@ export function PeopleList({
           "Find photo" link below to fix.
         </div>
       ) : null}
-      {people.map((person) => (
+
+      <div className="flex items-center gap-2">
+        <label htmlFor="people-sort" className="text-xs font-medium text-muted">Sort</label>
+        <select
+          id="people-sort"
+          value={sortMode}
+          onChange={(event) => setSortMode(event.target.value as SortMode)}
+          className="rounded-lg border border-border bg-bg px-2 py-1 text-xs text-text"
+        >
+          <option value="missing_photo_first">No-photo first</option>
+          <option value="alphabetical">Alphabetical</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+
+      {sortedPeople.map((person) => (
         <PersonCard key={person.id} person={person} onDelete={onDelete} onUpdate={onUpdate} metric={metrics[person.id]} />
       ))}
     </div>
