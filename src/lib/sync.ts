@@ -11,6 +11,7 @@ import {
 import { db as firestoreDb } from './firebase';
 import type {
   Category,
+  EntityTombstone,
   Person,
   ReviewEvent,
   SessionSummary,
@@ -19,6 +20,7 @@ import type {
 import {
   applyRemoteCategory,
   applyRemoteDelete,
+  applyRemoteTombstone,
   applyRemotePerson,
   applyRemoteReviewEvent,
   applyRemoteSessionSummary,
@@ -28,9 +30,12 @@ import {
   listPeopleInScope,
   listReviewEventsInScope,
   listSessionSummariesInScope,
+  listTombstonesInScope,
+  upsertTombstone,
   setReviewEventRemoteId,
 } from './storage';
 import { registerSyncHandlers, type SyncKind } from './sync-bus';
+import { decidePersonReconcileAction } from './sync-merge';
 
 /**
  * Cloud-sync engine. IndexedDB remains the source of truth; this module
@@ -41,16 +46,13 @@ import { registerSyncHandlers, type SyncKind } from './sync-bus';
  *   users/{uid}/settings/app
  *   users/{uid}/reviewEvents/{remoteId}
  *   users/{uid}/sessionSummaries/{sessionId}
+ *   users/{uid}/tombstones/{entityType}_{entityId}
  *
  * On `startSync` we do a single reconciliation pass (last-write-wins by
  * `updatedAt`), then subscribe via `onSnapshot` to pull subsequent changes.
  * `storage.ts` mutators call into the registered push handlers (see
  * `sync-bus.ts`) to propagate local writes outward.
  *
- * Known edge case (documented, not fixed in v1):
- *   If device A is offline holding a local copy of person X, device B deletes
- *   X, and A later comes online, A's reconciliation sees "local-only" and
- *   resurrects X. A tombstone store would fix this; left out for now.
  */
 
 let currentUid: string | null = null;
@@ -145,6 +147,19 @@ function pushDelete(kind: SyncKind, id: string): void {
   });
 }
 
+function pushTombstone(tombstone: EntityTombstone): void {
+  if (!currentUid) return;
+  const payload = stripUndefined({ ...tombstone, scope: undefined });
+  void setDoc(userDoc(currentUid, 'tombstones', tombstone.id), payload)
+    .then(() => {
+      const entityId = tombstone.id.replace(`${tombstone.entityType}_`, '');
+      return deleteDoc(userDoc(currentUid!, tombstone.entityType, entityId));
+    })
+    .catch((err) => {
+      console.warn('[sync] pushTombstone failed', tombstone, err);
+    });
+}
+
 registerSyncHandlers({
   isActive: () => active,
   syncedUid: () => currentUid,
@@ -154,6 +169,7 @@ registerSyncHandlers({
   pushReviewEvent,
   pushSessionSummary,
   pushDelete,
+  pushTombstone,
 });
 
 // --- Reconciliation ---------------------------------------------------------
@@ -166,7 +182,19 @@ function newer<T extends Timestamped>(a: T, b: T): boolean {
   return (a.updatedAt ?? 0) > (b.updatedAt ?? 0);
 }
 
+function extractEntityId(tombstone: EntityTombstone): string {
+  return tombstone.id.replace(`${tombstone.entityType}_`, '');
+}
+
 async function reconcilePeople(uid: string, scope: string): Promise<void> {
+  const tombstoneSnap = await getDocs(userCol(uid, 'tombstones'));
+  const tombstonesByPersonId = new Map<string, EntityTombstone>();
+  tombstoneSnap.forEach((d) => {
+    const row = d.data() as EntityTombstone;
+    if (row.entityType !== 'people') return;
+    tombstonesByPersonId.set(extractEntityId(row), row);
+  });
+
   const snap = await getDocs(userCol(uid, 'people'));
   const remoteById = new Map<string, Person>();
   snap.forEach((d) => remoteById.set(d.id, d.data() as Person));
@@ -176,6 +204,27 @@ async function reconcilePeople(uid: string, scope: string): Promise<void> {
 
   const ids = new Set([...remoteById.keys(), ...localById.keys()]);
   for (const id of ids) {
+    const tombstone = tombstonesByPersonId.get(id);
+    if (tombstone) {
+      const localPerson = localById.get(id);
+      const remotePerson = remoteById.get(id);
+      const decision = decidePersonReconcileAction({
+        local: localPerson,
+        remote: remotePerson,
+        tombstone,
+      });
+      if (decision === 'push_local' && localPerson) {
+        pushPerson(localPerson);
+      } else if (decision === 'apply_remote' && remotePerson) {
+        await applyRemotePerson({ ...remotePerson, scope });
+      } else {
+        if (localPerson) await applyRemoteDelete('people', id);
+        if (remotePerson) pushDelete('people', id);
+      }
+      await upsertTombstone({ ...tombstone, scope });
+      continue;
+    }
+
     const r = remoteById.get(id);
     const l = localById.get(id);
     if (r && !l) {
@@ -384,6 +433,26 @@ function subscribeSessionSummaries(uid: string, scope: string): Unsubscribe {
   });
 }
 
+function subscribeTombstones(uid: string, scope: string): Unsubscribe {
+  return onSnapshot(userCol(uid, 'tombstones'), (snap) => {
+    if (snap.metadata.hasPendingWrites) return;
+    void (async () => {
+      let touched = false;
+      for (const change of snap.docChanges()) {
+        if (change.type === 'removed') continue;
+        const tombstone = { ...(change.doc.data() as EntityTombstone), scope };
+        await applyRemoteTombstone(tombstone);
+        if (tombstone.entityType === 'people') {
+          const personId = extractEntityId(tombstone);
+          await applyRemoteDelete('people', personId);
+          touched = true;
+        }
+      }
+      if (touched) emitRemoteChanged('people');
+    })();
+  });
+}
+
 // --- Public lifecycle -------------------------------------------------------
 
 export function isSyncActive(): boolean {
@@ -416,12 +485,18 @@ export async function startSync(uid: string): Promise<void> {
         reconcileSessionSummaries(uid, scope),
       ]);
 
+      const localTombstones = await listTombstonesInScope(scope);
+      for (const tombstone of localTombstones) {
+        pushTombstone(tombstone);
+      }
+
       unsubs = [
         subscribePeople(uid, scope),
         subscribeCategories(uid, scope),
         subscribeSettings(uid),
         subscribeReviewEvents(uid, scope),
         subscribeSessionSummaries(uid, scope),
+        subscribeTombstones(uid, scope),
       ];
 
       // Nudge any mounted hooks so they pick up reconciled data without

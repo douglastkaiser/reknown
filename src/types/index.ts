@@ -57,6 +57,15 @@ export interface Person {
   updatedAt: number;
 }
 
+export type TombstoneEntityType = 'people';
+
+export interface EntityTombstone {
+  id: string;
+  entityType: TombstoneEntityType;
+  deletedAt: number;
+  scope?: string;
+}
+
 export interface EspnSport {
   slug: string;
   leagueSlug: string;
