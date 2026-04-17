@@ -65,6 +65,7 @@ export function ReviewSessionFlow({ people, settings }: { people: Person[]; sett
           card={session.current}
           person={person}
           onSubmitGuess={session.submitGuess}
+          onDontKnow={session.submitDontKnow}
           onContinue={session.continueAfterGuess}
         />
       ) : (
@@ -72,6 +73,7 @@ export function ReviewSessionFlow({ people, settings }: { people: Person[]; sett
           card={session.current}
           person={person}
           onSubmitChoice={session.submitFaceChoice}
+          onDontKnow={session.submitDontKnow}
           onContinue={session.continueAfterGuess}
         />
       )}

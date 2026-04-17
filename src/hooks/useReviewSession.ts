@@ -149,6 +149,21 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
     return result;
   }
 
+  function submitDontKnow(): GuessResult | null {
+    if (!current) return null;
+    const mode: ReviewMode = current.type === 'face_to_name' ? 'typed_guess' : 'multiple_choice';
+    const result: GuessResult = {
+      quality: 1,
+      matched: false,
+      feedback: current.type === 'face_to_name'
+        ? `No worries — correct answer: ${current.answer}`
+        : 'No worries — here is the correct answer.',
+      mode,
+    };
+    setGuessResult(result);
+    return result;
+  }
+
   function continueAfterGuess() {
     if (!guessResult) return;
     advanceWithQuality(guessResult.quality, guessResult.mode, guessResult.matched ? 'accepted' : 'rejected');
@@ -163,6 +178,7 @@ export function useReviewSession(people: Person[], settings: Settings | null) {
     start,
     submitGuess,
     submitFaceChoice,
+    submitDontKnow,
     continueAfterGuess,
   };
 }
