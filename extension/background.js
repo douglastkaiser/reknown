@@ -65,10 +65,12 @@ const PER_REQUEST_JITTER_MS = 2000;
 const BATCH_SIZE = 25;
 const BATCH_PAUSE_MS = 30000;
 const MAX_PHOTO_DIM = 400;
+const RATE_LIMIT_COOLDOWN_MS = 20 * 60 * 1000;
 const DEBUG_VERBOSE = true;
 
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
+let rateLimitCooldownUntil = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,6 +106,29 @@ function sendToTab(tabId, message) {
   } catch (err) {
     console.warn('[reknown-ext] sendToTab threw', err);
   }
+}
+
+function getRateLimitCooldownMeta(nowMs) {
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  const remainingMs = Math.max(0, rateLimitCooldownUntil - now);
+  return {
+    cooldownUntil: rateLimitCooldownUntil || null,
+    cooldownRemainingMs: remainingMs,
+    cooldownRemainingSeconds: Math.ceil(remainingMs / 1000),
+  };
+}
+
+function setRateLimitCooldown(nowMs) {
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  rateLimitCooldownUntil = now + RATE_LIMIT_COOLDOWN_MS;
+  const meta = getRateLimitCooldownMeta(now);
+  console.warn(
+    '[reknown-ext] rate-limit cooldown enabled',
+    'durationMs=' + RATE_LIMIT_COOLDOWN_MS,
+    'cooldownUntil=' + new Date(rateLimitCooldownUntil).toISOString(),
+    'remainingMs=' + meta.cooldownRemainingMs,
+  );
+  return meta;
 }
 
 function isLoginWall(response) {
@@ -1297,6 +1322,8 @@ async function runBatch(requestId, people, tabId) {
           total: people.length,
         });
         if (result.fatal) {
+          const cooldownMeta =
+            result.error === 'rate_limited' ? setRateLimitCooldown() : getRateLimitCooldownMeta();
           console.log(
             '[reknown-ext] runBatch fatal-abort requestId=' + requestId,
             'reason=' + result.error,
@@ -1308,6 +1335,7 @@ async function runBatch(requestId, people, tabId) {
             requestId,
             aborted: true,
             reason: result.error,
+            cooldown: cooldownMeta,
             summary: { total: people.length, success, failed, processed: i + 1 },
           });
           return;
@@ -1377,6 +1405,22 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const people = Array.isArray(msg.people) ? msg.people : [];
     const requestId = String(msg.requestId || Date.now());
     const force = msg.force === true;
+    const cooldownMeta = getRateLimitCooldownMeta();
+    if (cooldownMeta.cooldownRemainingMs > 0) {
+      console.warn(
+        '[reknown-ext] REKNOWN_ENRICH_REQUEST rejected due to active cooldown',
+        'requestId=' + requestId,
+        'tabId=' + tabId,
+        'cooldownRemainingMs=' + cooldownMeta.cooldownRemainingMs,
+      );
+      sendResponse({
+        ok: false,
+        error: 'rate_limited',
+        requestId,
+        cooldown: cooldownMeta,
+      });
+      return;
+    }
     if (activeBatches.size > 0 && !force) {
       const activeRequestIds = Array.from(activeBatches.keys());
       console.warn(
@@ -1390,6 +1434,7 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         error: 'batch_already_running',
         requestId,
         activeRequestIds,
+        cooldown: cooldownMeta,
       });
       return;
     }
@@ -1404,7 +1449,7 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     runBatch(requestId, people, tabId).catch((err) => {
       console.error('[reknown-ext] runBatch crashed', err);
     });
-    sendResponse({ ok: true, requestId });
+    sendResponse({ ok: true, requestId, cooldown: cooldownMeta });
     return;
   }
   if (msg.type === 'REKNOWN_ENRICH_CANCEL') {

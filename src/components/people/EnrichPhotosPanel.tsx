@@ -25,6 +25,12 @@ function formatEta(seconds: number): string {
   return `${m}m ${s}s`;
 }
 
+function formatCooldown(minutesFromNowMs: number | undefined): string {
+  if (!minutesFromNowMs || minutesFromNowMs <= 0) return 'a few minutes';
+  const mins = Math.max(1, Math.ceil(minutesFromNowMs / 60000));
+  return `${mins} minute${mins === 1 ? '' : 's'}`;
+}
+
 export function EnrichPhotosPanel({
   people,
   onUpdate,
@@ -122,6 +128,13 @@ export function EnrichPhotosPanel({
   const remaining = Math.max(0, progress.total - progress.completed);
   const etaSeconds = remaining * 3;
   const failedResults = results.filter((r) => r.status === 'error');
+  const cooldownRemainingMs =
+    aborted?.cooldown?.cooldownRemainingMs ??
+    ((aborted?.cooldown?.cooldownRemainingSeconds ?? 0) * 1000);
+  const showCooldownMessage =
+    aborted?.reason === 'rate_limited' &&
+    typeof cooldownRemainingMs === 'number' &&
+    cooldownRemainingMs > 0;
 
   function retryFailed() {
     const failedIds = new Set(failedResults.map((r) => r.id));
@@ -225,6 +238,12 @@ export function EnrichPhotosPanel({
           </Button>
         )}
       </div>
+      {showCooldownMessage ? (
+        <p className="rounded border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+          LinkedIn asked us to slow down. Please try again in{' '}
+          <strong>{formatCooldown(cooldownRemainingMs)}</strong>.
+        </p>
+      ) : null}
 
       {(isRunning || completed) && progress.total > 0 ? (
         <div className="space-y-2">
