@@ -1,6 +1,6 @@
 export type CardType = 'name_to_face' | 'face_to_name';
 
-export type EnrichMethod = 'linkedin' | 'espn_roster';
+export type EnrichMethod = 'linkedin' | 'espn_roster' | 'civic_reps';
 
 export interface Category {
   id: string;
@@ -12,6 +12,7 @@ export interface Category {
   espnTeamId?: string;
   espnTeamName?: string;
   espnSeason?: number;
+  civicAddressOrZip?: string;
   hiddenFromReview?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -35,6 +36,9 @@ export interface Person {
   photoUrl?: string;
   linkedinUrl?: string;
   espnPlayerId?: string;
+  civicSourceId?: string;
+  civicOffice?: string;
+  civicDivisionId?: string;
   tags?: string[];
   createdAt: number;
   updatedAt: number;

@@ -122,6 +122,21 @@ export function NewCategoryDialog({
             <input
               type="radio"
               name="enrichMethod"
+              checked={method === 'civic_reps'}
+              onChange={() => setMethod('civic_reps')}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="font-medium text-text">Local Politicians</span>
+              <span className="block text-xs text-muted">
+                Enter an address or ZIP code and import your local/state/federal representatives.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-white/5 p-3 text-sm">
+            <input
+              type="radio"
+              name="enrichMethod"
               checked={isEspn}
               onChange={() => setMethod('espn_roster')}
               className="mt-0.5"
