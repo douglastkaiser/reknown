@@ -3,6 +3,20 @@ import type { Category, EnrichMethod, EspnSport, EspnTeam } from '../../types';
 import { Button } from '../common/Button';
 import { EspnTeamSelector } from './EspnTeamSelector';
 
+const SUPPORTED_WEB_TEAM_PROVIDERS = {
+  vast: {
+    label: 'Vast',
+    isSupportedUrl: (url: URL) =>
+      url.protocol === 'https:' &&
+      url.hostname === 'www.vastspace.com' &&
+      url.pathname === '/team',
+    validationMessage:
+      'For Vast, URL must be https://www.vastspace.com/team (trailing slash or query is okay).',
+  },
+} as const;
+
+type WebTeamProvider = keyof typeof SUPPORTED_WEB_TEAM_PROVIDERS;
+
 type CreateInput = {
   name: string;
   enrichMethod: EnrichMethod;
@@ -11,6 +25,8 @@ type CreateInput = {
   espnTeamId?: string;
   espnTeamName?: string;
   espnSeason?: number;
+  webTeamProvider?: string;
+  webTeamUrl?: string;
 };
 
 export function NewCategoryDialog({
@@ -29,6 +45,8 @@ export function NewCategoryDialog({
     sport: EspnSport;
     team: EspnTeam;
   } | null>(null);
+  const [webTeamProvider, setWebTeamProvider] = useState<WebTeamProvider>('vast');
+  const [webTeamUrl, setWebTeamUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -37,6 +55,8 @@ export function NewCategoryDialog({
       setNameManuallyEdited(false);
       setMethod('linkedin');
       setEspnSelection(null);
+      setWebTeamProvider('vast');
+      setWebTeamUrl('');
       setSubmitting(false);
     }
   }, [open]);
@@ -63,9 +83,28 @@ export function NewCategoryDialog({
   }
 
   const isEspn = method === 'espn_roster';
+  const isWebTeamPage = method === 'web_team_page';
+  const selectedWebTeamProvider = SUPPORTED_WEB_TEAM_PROVIDERS[webTeamProvider];
+  const normalizedWebTeamUrl = webTeamUrl.trim();
+  const webTeamUrlError = (() => {
+    if (!isWebTeamPage) return '';
+    if (!normalizedWebTeamUrl) return 'Enter a team page URL.';
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(normalizedWebTeamUrl);
+    } catch {
+      return 'Enter a valid URL.';
+    }
+    if (!selectedWebTeamProvider.isSupportedUrl(parsedUrl)) {
+      return selectedWebTeamProvider.validationMessage;
+    }
+    return '';
+  })();
   const canSubmit = isEspn
     ? !!name.trim() && !!espnSelection && !submitting
-    : !!name.trim() && !submitting;
+    : isWebTeamPage
+      ? !!name.trim() && !webTeamUrlError && !submitting
+      : !!name.trim() && !submitting;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -79,6 +118,10 @@ export function NewCategoryDialog({
         input.espnTeamId = espnSelection.team.id;
         input.espnTeamName = espnSelection.team.displayName;
         input.espnSeason = new Date().getFullYear();
+      }
+      if (isWebTeamPage) {
+        input.webTeamProvider = webTeamProvider;
+        input.webTeamUrl = normalizedWebTeamUrl;
       }
       await onCreate(input);
     } finally {
@@ -148,10 +191,65 @@ export function NewCategoryDialog({
               </span>
             </span>
           </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-white/5 p-3 text-sm">
+            <input
+              type="radio"
+              name="enrichMethod"
+              checked={isWebTeamPage}
+              onChange={() => setMethod('web_team_page')}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="font-medium text-text">Web Team Page</span>
+              <span className="block text-xs text-muted">
+                Import people from a supported team page URL.
+              </span>
+            </span>
+          </label>
 
           {isEspn ? (
             <div className="pl-6">
               <EspnTeamSelector onSelect={handleEspnSelect} />
+            </div>
+          ) : null}
+          {isWebTeamPage ? (
+            <div className="space-y-2 pl-6">
+              <div className="space-y-1">
+                <label className="text-xs text-muted" htmlFor="web-team-provider">
+                  Provider
+                </label>
+                <select
+                  id="web-team-provider"
+                  className="w-full rounded-lg bg-white/5 px-3 py-2 text-sm"
+                  value={webTeamProvider}
+                  onChange={(e) => setWebTeamProvider(e.target.value as WebTeamProvider)}
+                >
+                  {Object.entries(SUPPORTED_WEB_TEAM_PROVIDERS).map(([provider, config]) => (
+                    <option key={provider} value={provider}>
+                      {config.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs text-muted" htmlFor="web-team-url">
+                  URL
+                </label>
+                <input
+                  id="web-team-url"
+                  type="url"
+                  className="w-full rounded-lg bg-white/5 px-3 py-2 text-sm"
+                  placeholder="https://www.vastspace.com/team"
+                  value={webTeamUrl}
+                  onChange={(e) => setWebTeamUrl(e.target.value)}
+                />
+                {webTeamUrlError ? (
+                  <p className="text-xs text-rose-400" role="alert">
+                    {webTeamUrlError}
+                  </p>
+                ) : null}
+              </div>
             </div>
           ) : null}
         </div>
