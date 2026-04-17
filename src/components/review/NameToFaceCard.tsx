@@ -67,7 +67,12 @@ export function NameToFaceCard({
         <h3 className="text-center text-3xl font-bold text-text md:text-4xl">{person.name}</h3>
       </div>
 
-      <div className="grid grid-cols-8 gap-2">
+      <div
+        className="grid gap-2"
+        style={{
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(4.25rem, 21vw), 1fr))',
+        }}
+      >
         {(card.options ?? []).map((photoUrl, index) => (!photoUrl ? null :
           <button
             key={`${card.id}:${index}`}
