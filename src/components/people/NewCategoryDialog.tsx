@@ -10,6 +10,7 @@ type CreateInput = {
   espnLeague?: string;
   espnTeamId?: string;
   espnTeamName?: string;
+  espnSeason?: number;
 };
 
 export function NewCategoryDialog({
@@ -56,7 +57,8 @@ export function NewCategoryDialog({
   ) {
     setEspnSelection(selection);
     if (selection && !nameManuallyEdited) {
-      setName(selection.team.displayName);
+      const year = new Date().getFullYear();
+      setName(`${selection.team.displayName} ${year}`);
     }
   }
 
@@ -76,6 +78,7 @@ export function NewCategoryDialog({
         input.espnLeague = espnSelection.sport.leagueSlug;
         input.espnTeamId = espnSelection.team.id;
         input.espnTeamName = espnSelection.team.displayName;
+        input.espnSeason = new Date().getFullYear();
       }
       await onCreate(input);
     } finally {

@@ -27,6 +27,7 @@ export function EspnRosterPanel({
   const sport = findSport(category);
   const teamId = category.espnTeamId;
   const teamName = category.espnTeamName ?? category.name;
+  const season = category.espnSeason;
 
   async function handleRefresh() {
     if (!sport || !teamId || refreshing) return;
@@ -90,7 +91,15 @@ export function EspnRosterPanel({
           <p className="text-xs text-muted">
             <span className="rounded-full border border-border px-2 py-0.5">
               {sportLabel}
-            </span>{' '}
+            </span>
+            {season ? (
+              <>
+                {' '}
+                <span className="rounded-full border border-border px-2 py-0.5">
+                  {season} roster
+                </span>
+              </>
+            ) : null}{' '}
             · {people.length} {people.length === 1 ? 'player' : 'players'} imported
           </p>
         </div>
