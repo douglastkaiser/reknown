@@ -22,6 +22,28 @@ export function NameToFaceCard({
     setSelectedIndex(null);
   }, [card.id]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (result) return;
+
+      const key = event.key;
+      const parsed = Number.parseInt(key, 10);
+      if (Number.isNaN(parsed)) return;
+
+      const index = parsed - 1;
+      const options = card.options ?? [];
+      if (index < 0 || index >= options.length) return;
+      if (!options[index]) return;
+
+      event.preventDefault();
+      setSelectedIndex(index);
+      setResult(onSubmitChoice(index));
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [card.options, onSubmitChoice, result]);
+
   function handleChoice(index: number) {
     if (result) return;
     setSelectedIndex(index);
@@ -56,6 +78,9 @@ export function NameToFaceCard({
               className="aspect-square w-full object-cover"
               style={{ objectPosition: 'center 25%' }}
             />
+            <span className="block border-t border-border bg-surface px-1 py-1 text-center text-xs font-semibold text-muted">
+              {index + 1}
+            </span>
           </button>
         ))}
       </div>
