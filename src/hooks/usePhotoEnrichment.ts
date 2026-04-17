@@ -10,6 +10,12 @@ export type EnrichErrorCode =
   | 'rate_limited'
   | 'batch_already_running';
 
+export interface EnrichCooldown {
+  cooldownUntil?: number | null;
+  cooldownRemainingMs?: number;
+  cooldownRemainingSeconds?: number;
+}
+
 export interface EnrichResult {
   id: string;
   name: string;
@@ -23,6 +29,11 @@ export interface EnrichProgress {
   succeeded: number;
   failed: number;
   currentPerson: string | null;
+}
+
+export interface EnrichAbortState {
+  reason?: string;
+  cooldown?: EnrichCooldown;
 }
 
 export interface UsePhotoEnrichmentOptions {
@@ -45,7 +56,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState<EnrichProgress>(INITIAL_PROGRESS);
   const [results, setResults] = useState<EnrichResult[]>([]);
-  const [aborted, setAborted] = useState<{ reason?: string } | null>(null);
+  const [aborted, setAborted] = useState<EnrichAbortState | null>(null);
   const [completed, setCompleted] = useState(false);
 
   const requestIdRef = useRef<string | null>(null);
@@ -72,6 +83,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             reason?: string;
             summary?: { total: number; success: number; failed: number };
             activeRequestIds?: string[];
+            cooldown?: EnrichCooldown;
           }
         | null;
       if (!data || !data.type) return;
@@ -138,7 +150,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         setIsRunning(false);
         setCompleted(true);
         if (data.aborted) {
-          setAborted({ reason: data.reason });
+          setAborted({ reason: data.reason, cooldown: data.cooldown });
         }
         requestIdRef.current = null;
         return;
@@ -151,7 +163,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         );
         setIsRunning(false);
         setCompleted(true);
-        setAborted({ reason: data.error || 'unknown' });
+        setAborted({ reason: data.error || 'unknown', cooldown: data.cooldown });
         requestIdRef.current = null;
       }
     }

@@ -129,6 +129,10 @@
                 activeRequestIds: Array.isArray(response.activeRequestIds)
                   ? response.activeRequestIds
                   : [],
+                cooldown:
+                  response.cooldown && typeof response.cooldown === 'object'
+                    ? response.cooldown
+                    : undefined,
               },
               window.location.origin,
             );
