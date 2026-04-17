@@ -1942,9 +1942,13 @@ async function runBatch(requestId, people, tabId) {
         console.error('[reknown-ext] unexpected error', err);
         result = { status: 'error', error: 'fetch_failed' };
       }
+      const resultErrorLog =
+        result && typeof result.error === 'object' && result.error !== null
+          ? JSON.stringify(result.error)
+          : String(result && result.error);
       console.log(
         '[reknown-ext] enrichOne result status=' + (result && result.status),
-        'error=' + (result && result.error),
+        'error=' + resultErrorLog,
         'personMs=' + (Date.now() - personStart),
         'cancelledDuring=' + batch.cancelled,
       );
@@ -1979,7 +1983,7 @@ async function runBatch(requestId, people, tabId) {
             result.error === 'rate_limited' ? setRateLimitCooldown() : getRateLimitCooldownMeta();
           console.log(
             '[reknown-ext] runBatch fatal-abort requestId=' + requestId,
-            'reason=' + result.error,
+            'reason=' + resultErrorLog,
             'success=' + success,
             'failed=' + failed,
           );
