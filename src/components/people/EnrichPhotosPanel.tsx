@@ -14,6 +14,7 @@ const ERROR_LABELS: Record<EnrichErrorCode, string> = {
   fetch_failed: 'Fetch failed',
   login_wall: 'LinkedIn login wall',
   rate_limited: 'Rate limited by LinkedIn',
+  batch_already_running: 'Another enrichment batch is already running',
 };
 
 function formatEta(seconds: number): string {
