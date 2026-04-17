@@ -6,6 +6,7 @@ import { PeopleForm } from './components/people/PeopleForm';
 import { PeopleList } from './components/people/PeopleList';
 import { EnrichPhotosPanel } from './components/people/EnrichPhotosPanel';
 import { EspnRosterPanel } from './components/people/EspnRosterPanel';
+import { CivicRepresentativesPanel } from './components/people/CivicRepresentativesPanel';
 import { CategoryTabs } from './components/people/CategoryTabs';
 import { CategoryHeader } from './components/people/CategoryHeader';
 import { NewCategoryDialog } from './components/people/NewCategoryDialog';
@@ -194,8 +195,8 @@ function PeoplePage({
           <h2 className="text-lg font-semibold">Create your first section</h2>
           <p className="text-sm text-muted">
             Group the people you want to remember into sections like{' '}
-            <strong>LinkedIn</strong> or <strong>Patriots</strong>. Each section has its own
-            import and enrichment method.
+            <strong>LinkedIn</strong>, <strong>Patriots</strong>, or <strong>Local Reps</strong>.
+            Each section has its own import and enrichment method.
           </p>
           <button
             type="button"
@@ -244,6 +245,12 @@ function PeoplePage({
             </>
           ) : activeCategory.enrichMethod === 'espn_roster' ? (
             <EspnRosterPanel
+              category={activeCategory}
+              people={peopleInCategory}
+              onImported={peopleState.refresh}
+            />
+          ) : activeCategory.enrichMethod === 'civic_reps' ? (
+            <CivicRepresentativesPanel
               category={activeCategory}
               people={peopleInCategory}
               onImported={peopleState.refresh}
