@@ -209,9 +209,11 @@
         'hasPhotoDataUrl=' + !!msg.photoDataUrl,
         'photoDataUrlLen=' + (msg.photoDataUrl ? msg.photoDataUrl.length : 0),
         'aborted=' + (msg.aborted === true),
-        'error=' + (msg.error || ''),
+        'error=' + (typeof msg.error === 'undefined' ? '' : JSON.stringify(msg.error)),
       );
       try {
+        // Forward the runtime message payload as-is (including rich `error`
+        // objects) so the page can branch on detailed reason codes.
         window.postMessage(msg, window.location.origin);
       } catch (err) {
         console.warn(
