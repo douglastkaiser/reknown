@@ -1376,6 +1376,31 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     const people = Array.isArray(msg.people) ? msg.people : [];
     const requestId = String(msg.requestId || Date.now());
+    const force = msg.force === true;
+    if (activeBatches.size > 0 && !force) {
+      const activeRequestIds = Array.from(activeBatches.keys());
+      console.warn(
+        '[reknown-ext] REKNOWN_ENRICH_REQUEST rejected batch already running',
+        'requestId=' + requestId,
+        'tabId=' + tabId,
+        'activeRequestIds=' + activeRequestIds.join(','),
+      );
+      sendResponse({
+        ok: false,
+        error: 'batch_already_running',
+        requestId,
+        activeRequestIds,
+      });
+      return;
+    }
+    if (activeBatches.size > 0 && force) {
+      console.warn(
+        '[reknown-ext] REKNOWN_ENRICH_REQUEST force accepted while batch active',
+        'requestId=' + requestId,
+        'tabId=' + tabId,
+        'activeRequestIds=' + Array.from(activeBatches.keys()).join(','),
+      );
+    }
     runBatch(requestId, people, tabId).catch((err) => {
       console.error('[reknown-ext] runBatch crashed', err);
     });

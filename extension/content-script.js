@@ -101,7 +101,7 @@
         openKeepAlive(requestId);
       }
       try {
-        browserApi.runtime.sendMessage(data, () => {
+        browserApi.runtime.sendMessage(data, (response) => {
           const lastErr = browserApi.runtime.lastError;
           if (lastErr) {
             console.warn(
@@ -109,6 +109,28 @@
               'type=' + type,
               'requestId=' + requestId,
               'msg=' + lastErr.message,
+            );
+            if (type === 'REKNOWN_ENRICH_REQUEST') closeKeepAlive(requestId);
+            return;
+          }
+          if (type === 'REKNOWN_ENRICH_REQUEST' && response && response.ok === false) {
+            console.warn(
+              '[reknown-ext] background rejected REKNOWN_ENRICH_REQUEST',
+              'requestId=' + requestId,
+              'error=' + (response.error || 'unknown'),
+              'activeRequestIds=' + JSON.stringify(response.activeRequestIds || []),
+            );
+            closeKeepAlive(requestId);
+            window.postMessage(
+              {
+                type: 'REKNOWN_ENRICH_REJECTED',
+                requestId,
+                error: response.error || 'unknown',
+                activeRequestIds: Array.isArray(response.activeRequestIds)
+                  ? response.activeRequestIds
+                  : [],
+              },
+              window.location.origin,
             );
           }
         });

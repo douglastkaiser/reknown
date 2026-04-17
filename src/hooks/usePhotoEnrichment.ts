@@ -7,7 +7,8 @@ export type EnrichErrorCode =
   | 'default_avatar'
   | 'fetch_failed'
   | 'login_wall'
-  | 'rate_limited';
+  | 'rate_limited'
+  | 'batch_already_running';
 
 export interface EnrichResult {
   id: string;
@@ -70,6 +71,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             aborted?: boolean;
             reason?: string;
             summary?: { total: number; success: number; failed: number };
+            activeRequestIds?: string[];
           }
         | null;
       if (!data || !data.type) return;
@@ -138,6 +140,18 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         if (data.aborted) {
           setAborted({ reason: data.reason });
         }
+        requestIdRef.current = null;
+        return;
+      }
+      if (data.type === 'REKNOWN_ENRICH_REJECTED') {
+        console.warn(
+          '[reknown] ENRICH_REJECTED requestId=' + (data.requestId || ''),
+          'error=' + (data.error || ''),
+          'activeRequestIds=' + JSON.stringify(data.activeRequestIds || []),
+        );
+        setIsRunning(false);
+        setCompleted(true);
+        setAborted({ reason: data.error || 'unknown' });
         requestIdRef.current = null;
       }
     }
