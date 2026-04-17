@@ -552,6 +552,8 @@ function extractFromVectorImage(html, slug) {
         '[reknown-ext] vector-image: no candidates',
         'rootUrlCount=' + objectExtraction.rootUrlCount,
         'objectGroups=' + objectExtraction.objectGroupCount,
+        'contextFallbackGroups=' + (objectExtraction.contextFallbackGroupCount || 0),
+        'contextFallbackSegments=' + (objectExtraction.contextFallbackSegmentCount || 0),
         'legacyFallbackEnabled=' + DEBUG_ENABLE_LEGACY_VECTOR_WINDOW_FALLBACK,
         'selectedExtractor=' + winningExtractor,
         'anyLicdnRootUrl=' + anyLicdnRootUrl,
@@ -596,6 +598,7 @@ function extractFromVectorImage(html, slug) {
       '[reknown-ext] vector-image: ' + candidates.length + ' total candidates, ' + signed.length + ' signed',
       'extractor=' + winningExtractor,
       'sizes=' + JSON.stringify(candidates.map(function (c) { return c.width + 'x' + c.height + (c.hasSig ? 's' : '') + (c.hasExpiry ? 'e' : '') + (c.hasResidualEntity ? '!' : '') + '/' + ((c.direction || 'object').charAt(0)); })),
+      'sources=' + JSON.stringify(candidates.map(function (c) { return (c.candidateSource || c.extractor || 'unknown') + ':' + (c.associationConfidence || 'n/a'); })),
       'rejectReasons=' + JSON.stringify(rejectReasons),
     );
   }
@@ -647,20 +650,47 @@ function extractFromVectorImage(html, slug) {
       );
     }
     if (ownerSelection.pool.length === 0) {
+      const relaxedSelection = chooseRelaxedSingleOwnerAssociation(signed, ownerOffsets, slug);
+      if (relaxedSelection && relaxedSelection.pool && relaxedSelection.pool.length > 0) {
+        pool = relaxedSelection.pool;
+        if (DEBUG_VERBOSE) {
+          console.warn(
+            '[reknown-ext] vector-image: relaxed owner association selected fallback group',
+            'slug=' + slug,
+            'mode=' + relaxedSelection.mode,
+            'reason=' + relaxedSelection.reason,
+            'groupKey=' + relaxedSelection.groupKey,
+            'ownerDistance=' + (relaxedSelection.ownerDistance === Infinity ? 'inf' : relaxedSelection.ownerDistance),
+            'hasTargetSlugNearby=' + relaxedSelection.hasTargetSlugNearby,
+            'compatibleGroupCount=' + relaxedSelection.compatibleGroupCount,
+            'sources=' + JSON.stringify(relaxedSelection.pool.map(function (c) {
+              return {
+                rootIndex: c.rootIndex,
+                source: c.candidateSource || c.extractor || 'unknown',
+                confidence: c.associationConfidence || 'n/a',
+                ownerDistance: c.ownerDistance,
+                range: (c.groupStart != null && c.groupEnd != null) ? (c.groupStart + '-' + c.groupEnd) : 'n/a',
+              };
+            })),
+          );
+        }
+      } else {
       // Safer to fail than to return a stranger's photo. Common cause:
       // LinkedIn returned a logged-out shell that contains only the
       // viewer's own displayphoto data (no target miniProfile embedded).
-      if (DEBUG_VERBOSE) {
-        console.warn(
-          '[reknown-ext] vector-image: no candidate is near "publicIdentifier":"' + slug + '"',
-          'ownerMatches=' + ownerOffsets.length,
-          'reason=' + ownerSelection.reason,
-          'returning null instead of a likely-wrong photo',
-        );
+        if (DEBUG_VERBOSE) {
+          console.warn(
+            '[reknown-ext] vector-image: no candidate is near "publicIdentifier":"' + slug + '"',
+            'ownerMatches=' + ownerOffsets.length,
+            'reason=' + ownerSelection.reason,
+            'relaxedAssociation=not_found_or_ambiguous',
+            'returning null instead of a likely-wrong photo',
+          );
+        }
+        return { url: null, rejectReason: 'owner_mismatch' };
       }
-      return { url: null, rejectReason: 'owner_mismatch' };
     }
-    pool = ownerSelection.pool;
+    if (ownerSelection.pool.length > 0) pool = ownerSelection.pool;
   }
 
   // Prefer sizes near MAX_PHOTO_DIM. Sort ascending and pick the smallest
@@ -692,27 +722,49 @@ function extractFromVectorImage(html, slug) {
 function extractVectorCandidatesFromObjects(decoded, slug) {
   const rootUrlRe = /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_)"/g;
   const objectRanges = buildJsonObjectRanges(decoded);
+  const ownerOffsets = slug ? findOwnerOffsets(decoded, slug) : [];
   const candidates = [];
   let rootMatch;
   let rootUrlCount = 0;
   let objectGroupCount = 0;
+  let contextFallbackGroupCount = 0;
+  let contextFallbackSegmentCount = 0;
 
   while ((rootMatch = rootUrlRe.exec(decoded)) !== null) {
     const rootIndex = rootUrlCount;
     rootUrlCount++;
     const rootUrl = rootMatch[1];
     const rootOffset = rootMatch.index;
+    const assetId = extractDigitalMediaAssetId(rootUrl);
     const objectRange = findNarrowestContainingRange(objectRanges, rootOffset);
     if (!objectRange) continue;
 
     const objectText = decoded.substring(objectRange.start, objectRange.end + 1);
     const artifactsMatch = objectText.match(/"artifacts"\s*:\s*\[([\s\S]*?)\]/);
-    if (!artifactsMatch) continue;
+    const groupMeta = getVectorGroupContext(decoded, objectRange.start, objectRange.end, slug);
+    if (!artifactsMatch) {
+      const fallbackSegments = extractVectorContextFallbackSegments(
+        decoded,
+        objectRanges,
+        objectRange,
+        rootOffset,
+        rootUrl,
+        rootIndex,
+        assetId,
+        slug,
+        ownerOffsets,
+      );
+      if (fallbackSegments.length > 0) {
+        contextFallbackGroupCount++;
+        contextFallbackSegmentCount += fallbackSegments.length;
+        Array.prototype.push.apply(candidates, fallbackSegments);
+      }
+      continue;
+    }
 
     objectGroupCount++;
     const artifactsBody = artifactsMatch[1];
     const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
-    const groupMeta = getVectorGroupContext(decoded, objectRange.start, objectRange.end, slug);
     let segMatch;
     let segCount = 0;
     while ((segMatch = segRe.exec(artifactsBody)) !== null) {
@@ -735,14 +787,37 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         rootOffset: rootOffset,
         ownerAnchorOffset: Math.floor((objectRange.start + objectRange.end) / 2),
         extractor: 'object',
+        candidateSource: 'object',
+        associationConfidence: 'strict-object',
         groupStart: objectRange.start,
         groupEnd: objectRange.end,
         groupTargetSlugNearby: groupMeta.targetSlugNearby,
         nearbyPublicIdentifiers: groupMeta.publicIdentifiers,
         nearbyMiniProfileRefs: groupMeta.miniProfileRefs,
+        assetId: assetId,
+        associationGroupKey: 'object:' + rootIndex + ':' + objectRange.start + '-' + objectRange.end,
         direction: 'object',
       });
       segCount++;
+    }
+
+    if (segCount === 0) {
+      const fallbackSegments = extractVectorContextFallbackSegments(
+        decoded,
+        objectRanges,
+        objectRange,
+        rootOffset,
+        rootUrl,
+        rootIndex,
+        assetId,
+        slug,
+        ownerOffsets,
+      );
+      if (fallbackSegments.length > 0) {
+        contextFallbackGroupCount++;
+        contextFallbackSegmentCount += fallbackSegments.length;
+        Array.prototype.push.apply(candidates, fallbackSegments);
+      }
     }
 
     if (DEBUG_VERBOSE) {
@@ -750,7 +825,9 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         '[reknown-ext] vector-image: object-group root#' + rootIndex,
         'range=' + objectRange.start + '-' + objectRange.end,
         'rootOffset=' + rootOffset,
+        'assetId=' + (assetId || 'n/a'),
         'segmentsFound=' + segCount,
+        'fallbackAdded=' + (segCount === 0 && candidates.some(function (c) { return c.rootIndex === rootIndex && c.extractor === 'context-fallback'; })),
         'targetSlugNearby=' + groupMeta.targetSlugNearby,
         'publicIdentifiers=' + JSON.stringify(groupMeta.publicIdentifiers),
         'miniProfileRefs=' + groupMeta.miniProfileRefs,
@@ -758,7 +835,13 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
     }
   }
 
-  return { candidates: candidates, rootUrlCount: rootUrlCount, objectGroupCount: objectGroupCount };
+  return {
+    candidates: candidates,
+    rootUrlCount: rootUrlCount,
+    objectGroupCount: objectGroupCount,
+    contextFallbackGroupCount: contextFallbackGroupCount,
+    contextFallbackSegmentCount: contextFallbackSegmentCount,
+  };
 }
 
 function extractVectorCandidatesByWindow(decoded) {
@@ -813,6 +896,85 @@ function extractVectorCandidatesByWindow(decoded) {
       '[reknown-ext] vector-image: used legacy window fallback',
       'candidateCount=' + candidates.length,
     );
+  }
+  return candidates;
+}
+
+function extractVectorContextFallbackSegments(
+  decoded,
+  objectRanges,
+  rootObjectRange,
+  rootOffset,
+  rootUrl,
+  rootIndex,
+  assetId,
+  slug,
+  ownerOffsets
+) {
+  if (!assetId) return [];
+  const fallbackStart = Math.max(0, rootOffset - VECTOR_CONTEXT_FALLBACK_MAX_BYTES);
+  const fallbackEnd = Math.min(decoded.length, rootOffset + VECTOR_CONTEXT_FALLBACK_MAX_BYTES);
+  const candidates = [];
+  for (let i = 0; i < objectRanges.length; i++) {
+    const range = objectRanges[i];
+    if (range.start === rootObjectRange.start && range.end === rootObjectRange.end) continue;
+    if (range.end < fallbackStart || range.start > fallbackEnd) continue;
+    const bytesFromRoot = Math.min(Math.abs(range.start - rootOffset), Math.abs(range.end - rootOffset));
+    if (bytesFromRoot < VECTOR_CONTEXT_FALLBACK_MIN_BYTES || bytesFromRoot > VECTOR_CONTEXT_FALLBACK_MAX_BYTES) continue;
+    const objectText = decoded.substring(range.start, range.end + 1);
+    if (objectText.indexOf(assetId) === -1) continue;
+    if (objectText.indexOf('fileIdentifyingUrlPathSegment') === -1) continue;
+    const groupMeta = getVectorGroupContext(decoded, range.start, range.end, slug);
+    const ownerAnchorOffset = Math.floor((range.start + range.end) / 2);
+    const ownerDistance = nearestOwnerDistance(ownerAnchorOffset, ownerOffsets);
+    const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    let segMatch;
+    let segCount = 0;
+    while ((segMatch = segRe.exec(objectText)) !== null) {
+      const segment = segMatch[1];
+      const fullUrl = rootUrl + segment;
+      const dimMatch = segment.match(/^(\d+)_(\d+)\//);
+      const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
+      const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
+      const strongAssociation = groupMeta.targetSlugNearby || ownerDistance <= OWNER_PROXIMITY_FALLBACK_BYTES;
+      if (!strongAssociation) continue;
+      candidates.push({
+        url: fullUrl,
+        width: width,
+        height: height,
+        hasSig: fullUrl.includes('&v=') && fullUrl.includes('&t='),
+        hasExpiry: fullUrl.includes('?e='),
+        hasResidualEntity: /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment),
+        rootIndex: rootIndex,
+        rootOffset: rootOffset,
+        ownerAnchorOffset: ownerAnchorOffset,
+        extractor: 'context-fallback',
+        candidateSource: 'context-fallback',
+        associationConfidence: groupMeta.targetSlugNearby ? 'strong-owner-context' : 'weak-owner-context',
+        groupStart: range.start,
+        groupEnd: range.end,
+        groupTargetSlugNearby: groupMeta.targetSlugNearby,
+        nearbyPublicIdentifiers: groupMeta.publicIdentifiers,
+        nearbyMiniProfileRefs: groupMeta.miniProfileRefs,
+        assetId: assetId,
+        associationGroupKey: 'fallback:' + rootIndex + ':' + range.start + '-' + range.end,
+        direction: 'context-fallback',
+      });
+      segCount++;
+    }
+
+    if (DEBUG_VERBOSE && segCount > 0) {
+      console.log(
+        '[reknown-ext] vector-image: context-fallback root#' + rootIndex,
+        'rootOffset=' + rootOffset,
+        'fallbackRange=' + range.start + '-' + range.end,
+        'distanceFromRoot=' + bytesFromRoot,
+        'assetId=' + assetId,
+        'segmentsFound=' + segCount,
+        'targetSlugNearby=' + groupMeta.targetSlugNearby,
+        'ownerDistance=' + (ownerDistance === Infinity ? 'inf' : ownerDistance),
+      );
+    }
   }
   return candidates;
 }
@@ -1167,6 +1329,9 @@ function findOwnerOffsets(decoded, slug) {
 // across unrelated profiles in the page.
 const OWNER_PROXIMITY_BYTES = 8000;
 const OWNER_PROXIMITY_FALLBACK_BYTES = 80000;
+const VECTOR_CONTEXT_FALLBACK_MIN_BYTES = 20000;
+const VECTOR_CONTEXT_FALLBACK_MAX_BYTES = 60000;
+const RELAXED_ASSOCIATION_UNIQUENESS_GAP_BYTES = 2000;
 
 function nearestOwnerDistance(offset, ownerOffsets) {
   if (!ownerOffsets || ownerOffsets.length === 0) return Infinity;
@@ -1228,6 +1393,57 @@ function chooseOwnerProximityCandidates(items, getOffset, ownerOffsets, contextL
     mode: 'reject',
     reason: 'owner_proximity_strict_reject',
     scored: scored,
+  };
+}
+
+function extractDigitalMediaAssetId(rootUrl) {
+  if (!rootUrl) return '';
+  const m = rootUrl.match(/\/dms\/image\/([^/]+\/[^/]+|[^/]+)\/profile-displayphoto-shrink_/i);
+  return m ? m[1] : '';
+}
+
+function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug) {
+  if (!slug || !ownerOffsets || ownerOffsets.length === 0 || !items || items.length === 0) return null;
+
+  const groups = new Map();
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.extractor !== 'context-fallback') continue;
+    const key = item.associationGroupKey || ('root:' + item.rootIndex);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  if (groups.size === 0) return null;
+
+  const scoredGroups = [];
+  groups.forEach(function (groupItems, key) {
+    let minDistance = Infinity;
+    let hasTargetSlugNearby = false;
+    for (let i = 0; i < groupItems.length; i++) {
+      const d = typeof groupItems[i].ownerDistance === 'number' ? groupItems[i].ownerDistance : Infinity;
+      if (d < minDistance) minDistance = d;
+      if (groupItems[i].groupTargetSlugNearby === true) hasTargetSlugNearby = true;
+    }
+    if (hasTargetSlugNearby || minDistance <= OWNER_PROXIMITY_FALLBACK_BYTES) {
+      scoredGroups.push({ key: key, items: groupItems, ownerDistance: minDistance, hasTargetSlugNearby: hasTargetSlugNearby });
+    }
+  });
+  if (scoredGroups.length === 0) return null;
+
+  scoredGroups.sort(function (a, b) { return a.ownerDistance - b.ownerDistance; });
+  const best = scoredGroups[0];
+  const runnerUp = scoredGroups[1] || null;
+  const uniqueNearest = !runnerUp || (runnerUp.ownerDistance - best.ownerDistance) > RELAXED_ASSOCIATION_UNIQUENESS_GAP_BYTES;
+  if (!uniqueNearest) return null;
+
+  return {
+    pool: best.items,
+    mode: 'relaxed-single-owner',
+    reason: 'owner_proximity_relaxed_unique_nearest_segment_set',
+    ownerDistance: best.ownerDistance,
+    groupKey: best.key,
+    hasTargetSlugNearby: best.hasTargetSlugNearby,
+    compatibleGroupCount: scoredGroups.length,
   };
 }
 
