@@ -571,7 +571,7 @@ function extractFromVectorImage(html, slug) {
         );
       }
     }
-    return null;
+    return { url: null, rejectReason: 'no_displayphoto_artifacts' };
   }
 
   // Filter to candidates with a valid signature. LinkedIn rejects image
@@ -608,7 +608,7 @@ function extractFromVectorImage(html, slug) {
         'sampleHasResidualEntity=' + (candidates[0] ? candidates[0].hasResidualEntity : false),
       );
     }
-    return null;
+    return { url: null, rejectReason: 'signed_candidates_found_but_rejected' };
   }
 
   // Disambiguate by target profile's publicIdentifier. Without this, when a
@@ -658,7 +658,7 @@ function extractFromVectorImage(html, slug) {
           'returning null instead of a likely-wrong photo',
         );
       }
-      return null;
+      return { url: null, rejectReason: 'owner_mismatch' };
     }
     pool = ownerSelection.pool;
   }
@@ -969,7 +969,7 @@ function extractFromLicdnRegex(html, slug) {
         'reason=owner_proximity_reject_no_owner',
       );
     }
-    return null;
+    return { url: null, rejectReason: 'owner_mismatch' };
   }
 
   var photoOwnerSelection = null;
@@ -1081,6 +1081,16 @@ function extractFromLicdnRegex(html, slug) {
       }
       return gUrl;
     }
+  }
+  var hasSignedPhotoCandidates = allPhotoMatches.some(function (m) {
+    var u = m && m[0] ? m[0] : '';
+    return u.includes('&v=') && u.includes('&t=') && u.includes('?e=');
+  });
+  if (hasSignedPhotoCandidates) {
+    return { url: null, rejectReason: 'signed_candidates_found_but_rejected' };
+  }
+  if (countOccurrences(decoded, 'profile-displayphoto-shrink') === 0) {
+    return { url: null, rejectReason: 'no_displayphoto_artifacts' };
   }
   return null;
 }
@@ -1222,11 +1232,45 @@ function chooseOwnerProximityCandidates(items, getOffset, ownerOffsets, contextL
 }
 
 function extractPhotoUrl(html, slug) {
+  const makeFailure = function (reason, extra) {
+    return Object.assign({ url: null, rejectReason: reason || null }, extra || {});
+  };
+  const normalizeStrategyResult = function (raw) {
+    if (typeof raw === 'string') return { url: raw, rejectReason: null };
+    if (raw && typeof raw === 'object') {
+      return {
+        url: typeof raw.url === 'string' ? raw.url : null,
+        rejectReason: typeof raw.rejectReason === 'string' ? raw.rejectReason : null,
+      };
+    }
+    return { url: null, rejectReason: null };
+  };
+  const chooseDominantRejectReason = function (strategyOutcomes) {
+    const counts = new Map();
+    for (let i = 0; i < strategyOutcomes.length; i++) {
+      const reason = strategyOutcomes[i] && strategyOutcomes[i].rejectReason;
+      if (!reason) continue;
+      if (!counts.has(reason)) counts.set(reason, { count: 0, firstIndex: i });
+      counts.get(reason).count++;
+    }
+    let bestReason = null;
+    let bestCount = -1;
+    let bestFirstIndex = Infinity;
+    for (const [reason, meta] of counts.entries()) {
+      if (meta.count > bestCount || (meta.count === bestCount && meta.firstIndex < bestFirstIndex)) {
+        bestReason = reason;
+        bestCount = meta.count;
+        bestFirstIndex = meta.firstIndex;
+      }
+    }
+    return bestReason;
+  };
   // Upfront HTML-landscape snapshot: single-line view of every interesting
   // marker so we can correlate strategy outcomes with the underlying page
   // shape without having to parse other logs.
+  let snapshot = null;
   if (DEBUG_VERBOSE) {
-    const snapshot = {
+    snapshot = {
       htmlLen: html.length,
       jsonLdPerson: countRegex(html, /"@type"\s*:\s*"Person"/g),
       ldJsonScripts: countRegex(html, /type=["']application\/ld\+json["']/g),
@@ -1261,31 +1305,57 @@ function extractPhotoUrl(html, slug) {
       // All strategy fns accept (html, slug); most ignore the slug, but
       // vector-image and licdn-regex use it to pick the target's rootUrl
       // rather than whichever one happens to appear first in the page.
-      const url = fn(html, slug);
+      const result = normalizeStrategyResult(fn(html, slug));
+      const url = result.url;
       const dt = Date.now() - t0;
       if (url && !isDefaultAvatar(url)) {
         console.log('[reknown-ext] photo extracted via', name, 'in', dt + 'ms');
         if (DEBUG_VERBOSE) {
-          outcomes.push({ strategy: name, result: 'MATCH', urlPrefix: url.substring(0, 80), len: url.length, ms: dt });
+          outcomes.push({
+            strategy: name,
+            result: 'MATCH',
+            rejectReason: result.rejectReason || null,
+            urlPrefix: url.substring(0, 80),
+            len: url.length,
+            ms: dt,
+          });
           console.log('[reknown-ext] strategy outcomes (on success):', JSON.stringify(outcomes));
         }
-        return url;
+        return { url: url, rejectReason: result.rejectReason || null, dominantRejectReason: null };
       }
       // Record why this strategy didn't win.
       if (!url) {
-        outcomes.push({ strategy: name, result: 'null', ms: dt });
+        outcomes.push({ strategy: name, result: 'null', rejectReason: result.rejectReason || null, ms: dt });
       } else if (isDefaultAvatar(url)) {
-        outcomes.push({ strategy: name, result: 'default-avatar', urlPrefix: url.substring(0, 80), ms: dt });
+        outcomes.push({
+          strategy: name,
+          result: 'default-avatar',
+          rejectReason: result.rejectReason || null,
+          urlPrefix: url.substring(0, 80),
+          ms: dt,
+        });
       }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
       outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
     }
   }
-  if (DEBUG_VERBOSE) {
-    console.log('[reknown-ext] all strategies failed, outcomes:', JSON.stringify(outcomes));
+  let dominantRejectReason = chooseDominantRejectReason(outcomes);
+  if (!dominantRejectReason) {
+    const authwallLike = /authwall|checkpoint/i.test(html) || /Join now/i.test(html) || /sign[- ]?in/i.test(html);
+    const hasDisplayPhotoArtifacts = /profile-displayphoto-shrink/i.test(html) || /fileIdentifyingUrlPathSegment/i.test(html);
+    if (authwallLike) dominantRejectReason = 'authwall_like_response';
+    else if (!hasDisplayPhotoArtifacts) dominantRejectReason = 'no_displayphoto_artifacts';
   }
-  return null;
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] all strategies failed, outcomes:',
+      JSON.stringify(outcomes),
+      'dominantRejectReason=' + (dominantRejectReason || 'none'),
+      'snapshot=' + JSON.stringify(snapshot),
+    );
+  }
+  return makeFailure(dominantRejectReason, { dominantRejectReason: dominantRejectReason || null, outcomes: outcomes });
 }
 
 async function blobToDataUrl(blob) {
@@ -1467,7 +1537,19 @@ async function enrichOne(person) {
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     return { status: 'error', error: 'login_wall', fatal: true };
   }
-  const photoUrl = extractPhotoUrl(html, slug);
+  const extraction = extractPhotoUrl(html, slug);
+  const photoUrl =
+    typeof extraction === 'string'
+      ? extraction
+      : (extraction && typeof extraction.url === 'string' ? extraction.url : null);
+  const extractionRejectReason =
+    extraction && typeof extraction === 'object' && typeof extraction.rejectReason === 'string'
+      ? extraction.rejectReason
+      : null;
+  const extractionDominantRejectReason =
+    extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
+      ? extraction.dominantRejectReason
+      : null;
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] extractPhotoUrl result:',
@@ -1480,10 +1562,19 @@ async function enrichOne(person) {
       'residualEntity=' + (photoUrl ? /&#\d+;|&#x[0-9a-fA-F]+;/.test(photoUrl) : false),
       'residualBsSlash=' + (photoUrl ? photoUrl.includes('\\/') : false),
       'hostIsMediaLicdn=' + (photoUrl ? /^https:\/\/media\.licdn\.com\//.test(photoUrl) : false),
+      'rejectReason=' + (extractionRejectReason || ''),
+      'dominantRejectReason=' + (extractionDominantRejectReason || ''),
     );
   }
   if (!photoUrl) {
-    return { status: 'error', error: 'no_photo_found' };
+    return {
+      status: 'error',
+      error: {
+        code: 'no_photo_found',
+        reason: extractionRejectReason || extractionDominantRejectReason || null,
+        dominantRejectReason: extractionDominantRejectReason || extractionRejectReason || null,
+      },
+    };
   }
   if (isDefaultAvatar(photoUrl)) {
     return { status: 'error', error: 'default_avatar' };
