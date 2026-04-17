@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Person, ReviewCard } from '../../types';
 import type { GuessResult } from '../../hooks/useReviewSession';
 import { CardBack } from './CardBack';
+import { FacePhoto } from '../common/FacePhoto';
 
 export function NameToFaceCard({
   card,
@@ -79,11 +80,10 @@ export function NameToFaceCard({
             onClick={() => handleChoice(index)}
             className="overflow-hidden rounded-lg border-2 border-border transition hover:border-accent/50 focus:outline-none"
           >
-            <img
+            <FacePhoto
               src={photoUrl}
               alt={`Option ${index + 1}`}
-              className="aspect-square w-full object-cover"
-              style={{ objectPosition: 'center 25%' }}
+              containerClassName="aspect-square w-full"
             />
             <span className="block border-t border-border bg-surface px-1 py-1 text-center text-xs font-semibold text-muted">
               {index + 1}

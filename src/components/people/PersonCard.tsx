@@ -4,6 +4,8 @@ import { Button } from '../common/Button';
 import { googleImageSearchUrl, urlToData } from '../../lib/image';
 import { capitalizeName, parseNicknames } from '../../lib/text';
 import type { PersonMetric } from '../../lib/storage';
+import { detectPhotoFocus } from '../../lib/face-focus';
+import { FacePhoto } from '../common/FacePhoto';
 
 export function PersonCard({
   person,
@@ -40,12 +42,17 @@ export function PersonCard({
 
   async function saveEdit() {
     if (!onUpdate || !editName.trim()) return;
+    const normalizedPhotoUrl = editPhotoUrl.trim() || undefined;
+    const nextPhotoSource = person.photoDataUrl || normalizedPhotoUrl;
+    const photoChanged = normalizedPhotoUrl !== (person.photoUrl ?? '');
+    const photoFocus = photoChanged ? await detectPhotoFocus(nextPhotoSource) : person.photoFocus;
     await onUpdate(person.id, {
       name: capitalizeName(editName),
       nicknames: parseNicknames(editNicknames),
       headline: editHeadline,
       company: editCompany,
-      photoUrl: editPhotoUrl.trim() || undefined,
+      photoUrl: normalizedPhotoUrl,
+      photoFocus,
       linkedinUrl: editLinkedinUrl.trim() || undefined,
     });
     setEditing(false);
@@ -62,8 +69,8 @@ export function PersonCard({
       // the edit form has something to display; otherwise the user sees a
       // photo but an empty Photo URL field.
       const updates: Partial<Person> = data.startsWith('data:')
-        ? { photoDataUrl: data, photoUrl: trimmed }
-        : { photoUrl: data };
+        ? { photoDataUrl: data, photoUrl: trimmed, photoFocus: await detectPhotoFocus(data) }
+        : { photoUrl: data, photoFocus: await detectPhotoFocus(data) };
       await onUpdate(person.id, updates);
       setPasteUrl('');
     } finally {
@@ -75,11 +82,11 @@ export function PersonCard({
     <article className="card">
       <div className="flex items-start gap-3">
         {photo ? (
-          <img
+          <FacePhoto
             src={photo}
             alt={person.name}
-            className="h-14 w-14 rounded-full object-cover"
-            style={{ objectPosition: 'center 25%' }}
+            containerClassName="h-14 w-14 rounded-full"
+            focus={person.photoFocus}
           />
         ) : (
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10 text-xs text-muted">
@@ -125,11 +132,11 @@ export function PersonCard({
         <div className="mt-3 space-y-2 rounded-xl border border-border bg-bg/50 p-3">
           {photo ? (
             <div className="flex items-center gap-2 text-xs text-muted">
-              <img
+              <FacePhoto
                 src={photo}
                 alt=""
-                className="h-8 w-8 rounded-full object-cover"
-                style={{ objectPosition: 'center 25%' }}
+                containerClassName="h-8 w-8 rounded-full"
+                focus={person.photoFocus}
               />
               <span>
                 Photo set ({person.photoDataUrl ? 'enriched / uploaded' : 'external URL'})

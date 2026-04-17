@@ -34,6 +34,11 @@ export interface Person {
   notes?: string;
   photoDataUrl?: string;
   photoUrl?: string;
+  photoFocus?: {
+    x: number;
+    y: number;
+    zoom?: number;
+  };
   linkedinUrl?: string;
   espnPlayerId?: string;
   civicSourceId?: string;

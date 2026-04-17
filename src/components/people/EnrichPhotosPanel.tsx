@@ -6,6 +6,7 @@ import {
   usePhotoEnrichment,
   type EnrichErrorCode,
 } from '../../hooks/usePhotoEnrichment';
+import { detectPhotoFocus } from '../../lib/face-focus';
 
 const ERROR_LABELS: Record<EnrichErrorCode, string> = {
   invalid_url: 'Invalid LinkedIn URL',
@@ -40,13 +41,14 @@ export function EnrichPhotosPanel({
 }) {
   const { extensionAvailable } = useExtensionDetection();
   const enrichment = usePhotoEnrichment({
-    onPhotoFetched: (id, photoDataUrl, photoUrl) => {
+    onPhotoFetched: async (id, photoDataUrl, photoUrl) => {
+      const photoFocus = await detectPhotoFocus(photoDataUrl || photoUrl);
       // Persist the raw licdn URL alongside the base64 data URL when the
       // extension provides it, so the "Edit person" form has something to
       // show in the Photo URL field instead of appearing blank.
       const updates: Partial<Person> = photoUrl
-        ? { photoDataUrl, photoUrl }
-        : { photoDataUrl };
+        ? { photoDataUrl, photoUrl, photoFocus }
+        : { photoDataUrl, photoFocus };
       return onUpdate(id, updates);
     },
   });
