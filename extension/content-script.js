@@ -93,7 +93,12 @@
       return;
     }
     console.log('[reknown-ext] content-script received', type, 'requestId=' + (data.requestId || ''));
-    if (type === 'REKNOWN_ENRICH_REQUEST' || type === 'REKNOWN_ENRICH_CANCEL') {
+    if (
+      type === 'REKNOWN_ENRICH_REQUEST' ||
+      type === 'REKNOWN_ENRICH_CANCEL' ||
+      type === 'REKNOWN_ENRICH_GET_PROFILE' ||
+      type === 'REKNOWN_ENRICH_SET_PROFILE'
+    ) {
       const requestId = String(data.requestId || '');
       if (type === 'REKNOWN_ENRICH_REQUEST') {
         // Open the keep-alive BEFORE sending the request so the background
@@ -132,6 +137,26 @@
                 cooldown:
                   response.cooldown && typeof response.cooldown === 'object'
                     ? response.cooldown
+                    : undefined,
+              },
+              window.location.origin,
+            );
+          }
+          if (type === 'REKNOWN_ENRICH_GET_PROFILE' || type === 'REKNOWN_ENRICH_SET_PROFILE') {
+            window.postMessage(
+              {
+                type: 'REKNOWN_ENRICH_PROFILE',
+                ok: !!(response && response.ok),
+                requestId,
+                action: type === 'REKNOWN_ENRICH_SET_PROFILE' ? 'set' : 'get',
+                profile: response && response.profile ? response.profile : undefined,
+                config: response && response.config ? response.config : undefined,
+                persisted: response && response.persisted === true,
+                error: response && response.error ? response.error : undefined,
+                detail: response && response.detail ? response.detail : undefined,
+                activeRequestIds:
+                  response && Array.isArray(response.activeRequestIds)
+                    ? response.activeRequestIds
                     : undefined,
               },
               window.location.origin,
