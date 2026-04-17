@@ -698,28 +698,31 @@ function extractFromVectorImage(html, slug) {
   let pool = signed;
   if (slug) {
     const ownerOffsets = findOwnerOffsets(decoded, slug);
-    // Annotate every signed candidate with its distance to the nearest
-    // publicIdentifier match.
-    for (let ci = 0; ci < signed.length; ci++) {
-      signed[ci].ownerDistance = nearestOwnerDistance(signed[ci].rootOffset, ownerOffsets);
+    const ownerSelection = chooseOwnerProximityCandidates(
+      signed,
+      function (c) { return c.rootOffset; },
+      ownerOffsets,
+      'vector-image',
+    );
+    for (let ci = 0; ci < ownerSelection.scored.length; ci++) {
+      ownerSelection.scored[ci].item.ownerDistance = ownerSelection.scored[ci].ownerDistance;
     }
-    const inWindow = signed.filter(function (c) {
-      return c.ownerDistance <= OWNER_PROXIMITY_BYTES;
-    });
     if (DEBUG_VERBOSE) {
       console.log(
         '[reknown-ext] vector-image: owner-proximity filter',
         'slug=' + slug,
         'ownerMatches=' + ownerOffsets.length,
         'signedCount=' + signed.length,
-        'inWindowCount=' + inWindow.length,
+        'inWindowCount=' + ownerSelection.pool.length,
+        'mode=' + ownerSelection.mode,
+        'reason=' + ownerSelection.reason,
         'window=' + OWNER_PROXIMITY_BYTES + 'B',
         'distances=' + JSON.stringify(signed.map(function (c) {
           return { rootIndex: c.rootIndex, dim: c.width + 'x' + c.height, dist: c.ownerDistance === Infinity ? -1 : c.ownerDistance };
         })),
       );
     }
-    if (ownerOffsets.length === 0 || inWindow.length === 0) {
+    if (ownerSelection.pool.length === 0) {
       // Safer to fail than to return a stranger's photo. Common cause:
       // LinkedIn returned a logged-out shell that contains only the
       // viewer's own displayphoto data (no target miniProfile embedded).
@@ -727,12 +730,13 @@ function extractFromVectorImage(html, slug) {
         console.warn(
           '[reknown-ext] vector-image: no candidate is near "publicIdentifier":"' + slug + '"',
           'ownerMatches=' + ownerOffsets.length,
+          'reason=' + ownerSelection.reason,
           'returning null instead of a likely-wrong photo',
         );
       }
       return null;
     }
-    pool = inWindow;
+    pool = ownerSelection.pool;
   }
 
   // Prefer sizes near MAX_PHOTO_DIM. Sort ascending and pick the smallest
@@ -840,9 +844,32 @@ function extractFromLicdnRegex(html, slug) {
     if (DEBUG_VERBOSE) {
       console.warn(
         '[reknown-ext] licdn-regex: no "publicIdentifier":"' + slug + '" in HTML — refusing to guess',
+        'reason=owner_proximity_reject_no_owner',
       );
     }
     return null;
+  }
+
+  var photoOwnerSelection = null;
+  var allowedPhotoOffsets = null;
+  if (slug) {
+    photoOwnerSelection = chooseOwnerProximityCandidates(
+      allPhotoMatches,
+      function (m) { return m.index; },
+      ownerOffsets,
+      'licdn-regex',
+    );
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] licdn-regex: photo owner selection',
+        'ownerMatches=' + ownerOffsets.length,
+        'candidateCount=' + allPhotoMatches.length,
+        'selectedCount=' + photoOwnerSelection.pool.length,
+        'mode=' + photoOwnerSelection.mode,
+        'reason=' + photoOwnerSelection.reason,
+      );
+    }
+    allowedPhotoOffsets = new Set(photoOwnerSelection.pool.map(function (m) { return m.index; }));
   }
 
   // Score each match. A valid signed LinkedIn photo URL is 200+ chars and
@@ -852,10 +879,7 @@ function extractFromLicdnRegex(html, slug) {
   var bestScore = -1;
   for (var pi = 0; pi < allPhotoMatches.length; pi++) {
     var candidate = allPhotoMatches[pi][0];
-    if (slug) {
-      var dist = nearestOwnerDistance(allPhotoMatches[pi].index, ownerOffsets);
-      if (dist > OWNER_PROXIMITY_BYTES) continue;
-    }
+    if (allowedPhotoOffsets && !allowedPhotoOffsets.has(allPhotoMatches[pi].index)) continue;
     var score = 0;
     if (candidate.length > 100) score += 10;
     if (candidate.includes('&v=') && candidate.includes('&t=')) score += 10;
@@ -902,13 +926,30 @@ function extractFromLicdnRegex(html, slug) {
   // owner proximity when a slug is available, for the same reason as above.
   const genericRe = new RegExp('https://media\\.licdn\\.com/dms/image/' + URL_BODY + '+', 'g');
   const allGenericMatches = [...decoded.matchAll(genericRe)];
+  var allowedGenericOffsets = null;
+  if (slug) {
+    var genericOwnerSelection = chooseOwnerProximityCandidates(
+      allGenericMatches,
+      function (m) { return m.index; },
+      ownerOffsets,
+      'licdn-regex generic',
+    );
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] licdn-regex: generic owner selection',
+        'ownerMatches=' + ownerOffsets.length,
+        'candidateCount=' + allGenericMatches.length,
+        'selectedCount=' + genericOwnerSelection.pool.length,
+        'mode=' + genericOwnerSelection.mode,
+        'reason=' + genericOwnerSelection.reason,
+      );
+    }
+    allowedGenericOffsets = new Set(genericOwnerSelection.pool.map(function (m) { return m.index; }));
+  }
   for (var gi = 0; gi < allGenericMatches.length; gi++) {
     var gUrl = allGenericMatches[gi][0];
     if (/profile-displaybackgroundimage/.test(gUrl)) continue;
-    if (slug) {
-      var gDist = nearestOwnerDistance(allGenericMatches[gi].index, ownerOffsets);
-      if (gDist > OWNER_PROXIMITY_BYTES) continue;
-    }
+    if (allowedGenericOffsets && !allowedGenericOffsets.has(allGenericMatches[gi].index)) continue;
     if (gUrl.length > 100 && gUrl.includes('&v=')) {
       if (DEBUG_VERBOSE) {
         console.log(
@@ -993,6 +1034,7 @@ function findOwnerOffsets(decoded, slug) {
 // few KB of each other; 8 KB gives comfortable headroom without matching
 // across unrelated profiles in the page.
 const OWNER_PROXIMITY_BYTES = 8000;
+const OWNER_PROXIMITY_FALLBACK_BYTES = 80000;
 
 function nearestOwnerDistance(offset, ownerOffsets) {
   if (!ownerOffsets || ownerOffsets.length === 0) return Infinity;
@@ -1002,6 +1044,59 @@ function nearestOwnerDistance(offset, ownerOffsets) {
     if (d < best) best = d;
   }
   return best;
+}
+
+function chooseOwnerProximityCandidates(items, getOffset, ownerOffsets, contextLabel) {
+  if (!ownerOffsets || ownerOffsets.length === 0) {
+    return { pool: [], mode: 'reject', reason: 'owner_proximity_reject_no_owner' };
+  }
+
+  const scored = [];
+  for (let i = 0; i < items.length; i++) {
+    const dist = nearestOwnerDistance(getOffset(items[i], i), ownerOffsets);
+    scored.push({ item: items[i], ownerDistance: dist });
+  }
+
+  const inStrictWindow = scored.filter(function (s) {
+    return s.ownerDistance <= OWNER_PROXIMITY_BYTES;
+  });
+  if (inStrictWindow.length > 0) {
+    return {
+      pool: inStrictWindow.map(function (s) { return s.item; }),
+      mode: 'strict',
+      reason: 'owner_proximity_strict',
+      scored: scored,
+    };
+  }
+
+  if (ownerOffsets.length === 1 && scored.length > 0) {
+    const nearest = scored.reduce(function (best, cur) {
+      return cur.ownerDistance < best.ownerDistance ? cur : best;
+    }, scored[0]);
+    if (nearest.ownerDistance <= OWNER_PROXIMITY_FALLBACK_BYTES) {
+      if (DEBUG_VERBOSE) {
+        console.warn(
+          '[reknown-ext] ' + contextLabel + ': owner_proximity_fallback',
+          'strictWindow=' + OWNER_PROXIMITY_BYTES + 'B',
+          'fallbackWindow=' + OWNER_PROXIMITY_FALLBACK_BYTES + 'B',
+          'selectedDistance=' + nearest.ownerDistance,
+        );
+      }
+      return {
+        pool: [nearest.item],
+        mode: 'fallback',
+        reason: 'owner_proximity_fallback',
+        scored: scored,
+      };
+    }
+  }
+
+  return {
+    pool: [],
+    mode: 'reject',
+    reason: 'owner_proximity_strict_reject',
+    scored: scored,
+  };
 }
 
 function extractPhotoUrl(html, slug) {
