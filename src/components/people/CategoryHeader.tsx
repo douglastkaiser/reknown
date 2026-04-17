@@ -12,10 +12,12 @@ export function CategoryHeader({
   category,
   peopleCount,
   onDelete,
+  onToggleHiddenFromReview,
 }: {
   category: Category;
   peopleCount: number;
   onDelete: (id: string) => Promise<void> | void;
+  onToggleHiddenFromReview: (id: string, hidden: boolean) => Promise<void> | void;
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -30,9 +32,11 @@ export function CategoryHeader({
     }
   }
 
+  const includedInReview = !category.hiddenFromReview;
+
   return (
     <>
-      <div className="card flex items-start justify-between gap-3">
+      <div className="card flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-text">{category.name}</h2>
           <p className="text-xs text-muted">
@@ -42,14 +46,34 @@ export function CategoryHeader({
             · {peopleCount} {peopleCount === 1 ? 'person' : 'people'}
           </p>
         </div>
-        <Button
-          type="button"
-          className="bg-red-400/20 hover:bg-red-400/30"
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleting}
-        >
-          Delete section
-        </Button>
+        <div className="flex items-center gap-2">
+          <label
+            className="flex cursor-pointer select-none items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm text-muted hover:bg-white/5 hover:text-text"
+            title="When off, people in this section are excluded from Review sessions."
+          >
+            <span>In review</span>
+            <input
+              type="checkbox"
+              className="h-4 w-4 cursor-pointer accent-accent"
+              checked={includedInReview}
+              onChange={(e) =>
+                void onToggleHiddenFromReview(category.id, !e.target.checked)
+              }
+              aria-label={`Include ${category.name} in review`}
+            />
+            <span className={includedInReview ? 'text-text' : 'text-muted'}>
+              {includedInReview ? 'On' : 'Off'}
+            </span>
+          </label>
+          <Button
+            type="button"
+            className="bg-red-400/20 hover:bg-red-400/30"
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleting}
+          >
+            Delete section
+          </Button>
+        </div>
       </div>
 
       <ConfirmDialog

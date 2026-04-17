@@ -111,7 +111,7 @@ function PeoplePage({
   peopleState: ReturnType<typeof usePeople>;
   categoriesState: ReturnType<typeof useCategories>;
 }) {
-  const { categories, addCategory, removeCategory } = categoriesState;
+  const { categories, addCategory, editCategory, removeCategory } = categoriesState;
   const [activeId, setActiveId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -179,6 +179,10 @@ function PeoplePage({
     await peopleState.refresh();
   }
 
+  async function handleToggleHiddenFromReview(id: string, hidden: boolean) {
+    await editCategory(id, { hiddenFromReview: hidden });
+  }
+
   if (categoriesState.loading && categories.length === 0) {
     return <div className="card text-sm text-muted">Loading…</div>;
   }
@@ -225,6 +229,7 @@ function PeoplePage({
             category={activeCategory}
             peopleCount={peopleInCategory.length}
             onDelete={handleDelete}
+            onToggleHiddenFromReview={handleToggleHiddenFromReview}
           />
 
           <PeopleForm categoryId={activeCategory.id} onSave={peopleState.addPerson} />
@@ -272,10 +277,20 @@ function AuthenticatedApp() {
   const statsState = useStats();
   const { settings } = useAppSettings();
 
+  const reviewPeople = useMemo(() => {
+    const hiddenIds = new Set(
+      categoriesState.categories
+        .filter((c) => c.hiddenFromReview)
+        .map((c) => c.id),
+    );
+    if (hiddenIds.size === 0) return peopleState.people;
+    return peopleState.people.filter((p) => !hiddenIds.has(p.categoryId));
+  }, [peopleState.people, categoriesState.categories]);
+
   return (
     <AppShell>
       <Routes>
-        <Route path="/review" element={<ReviewSessionFlow people={peopleState.people} settings={settings} />} />
+        <Route path="/review" element={<ReviewSessionFlow people={reviewPeople} settings={settings} />} />
         <Route
           path="/people"
           element={<PeoplePage peopleState={peopleState} categoriesState={categoriesState} />}
