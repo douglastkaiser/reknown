@@ -1,4 +1,9 @@
-import { WEB_TEAM_PROVIDERS, matchWebTeamProvider } from './providers';
+import {
+  WEB_TEAM_PROVIDERS,
+  matchWebTeamProvider,
+  validateWebTeamProviderUrl,
+} from './providers';
+import { WEB_TEAM_DISCOVERY_SOURCES, prepareWebTeamSectionImports } from './discovery';
 import { fetchAndParseVastTeamPage } from './vast';
 import type { ImportWebTeamPageInput, WebTeamPersonRecord, WebTeamProvider } from './types';
 
@@ -29,18 +34,24 @@ export async function importWebTeamPage({
   }
 
   const resolvedProvider = resolveProvider(provider, parsedUrl);
-  const config = WEB_TEAM_PROVIDERS[resolvedProvider];
-  if (!config.isSupportedUrl(parsedUrl)) {
-    throw new Error(config.validationMessage);
+  const validation = validateWebTeamProviderUrl(resolvedProvider, parsedUrl.toString());
+  if (!validation.ok) {
+    throw new Error(validation.reason);
   }
 
   switch (resolvedProvider) {
     case 'vast':
-      return fetchAndParseVastTeamPage(parsedUrl.toString());
+      return fetchAndParseVastTeamPage(validation.parsedUrl.toString());
     default:
       throw new Error(`Unsupported web team provider: ${resolvedProvider}`);
   }
 }
 
 export type { WebTeamPersonRecord, WebTeamProvider } from './types';
-export { WEB_TEAM_PROVIDERS, matchWebTeamProvider } from './providers';
+export {
+  WEB_TEAM_DISCOVERY_SOURCES,
+  WEB_TEAM_PROVIDERS,
+  matchWebTeamProvider,
+  prepareWebTeamSectionImports,
+  validateWebTeamProviderUrl,
+};
