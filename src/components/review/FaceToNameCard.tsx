@@ -8,11 +8,13 @@ export function FaceToNameCard({
   card,
   person,
   onSubmitGuess,
+  onDontKnow,
   onContinue,
 }: {
   card: ReviewCard;
   person: Person;
   onSubmitGuess: (guess: string) => GuessResult | null;
+  onDontKnow: () => GuessResult | null;
   onContinue: () => void;
 }) {
   const [guess, setGuess] = useState('');
@@ -63,9 +65,14 @@ export function FaceToNameCard({
             onChange={(e) => setGuess(e.target.value)}
             autoFocus
           />
-          <Button type="submit" disabled={!guess.trim()} className="w-full py-3">
-            Submit
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button type="submit" disabled={!guess.trim()} className="w-full py-3">
+              Submit
+            </Button>
+            <Button type="button" onClick={() => setResult(onDontKnow())} className="w-full py-3">
+              I don't know
+            </Button>
+          </div>
         </form>
       </div>
     </section>

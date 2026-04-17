@@ -7,11 +7,13 @@ export function NameToFaceCard({
   card,
   person,
   onSubmitChoice,
+  onDontKnow,
   onContinue,
 }: {
   card: ReviewCard;
   person: Person;
   onSubmitChoice: (optionIndex: number) => GuessResult | null;
+  onDontKnow: () => GuessResult | null;
   onContinue: () => void;
 }) {
   const [result, setResult] = useState<GuessResult | null>(null);
@@ -84,6 +86,14 @@ export function NameToFaceCard({
           </button>
         ))}
       </div>
+
+      <button
+        type="button"
+        onClick={() => setResult(onDontKnow())}
+        className="self-center rounded-xl border border-border bg-surface px-4 py-2 text-sm font-medium text-text transition hover:bg-accent/10"
+      >
+        I don't know
+      </button>
     </section>
   );
 }
