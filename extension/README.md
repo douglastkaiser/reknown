@@ -104,7 +104,7 @@ This is the easiest Firefox path **if you used Option A**:
 3. Make sure you've imported your LinkedIn CSV first. If you haven't, go to the **People** tab in reknown → **Import CSV** → follow the on-screen steps (there are also instructions on reknown's **About** page).
 4. Still on the People tab, you should now see a new section at the top called **"Enrich Photos from LinkedIn"** with a button like `Enrich (47)` (where 47 = the number of people with a LinkedIn URL but no photo yet).
    - **If you don't see that section,** the extension isn't being detected. Try: refresh the page, make sure the extension is enabled in your browser's extensions page, and make sure the URL you're visiting reknown on matches one of the supported origins (see below).
-5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the tab open and let it run. It takes about 3 seconds per person, plus a 30-second pause after every 25 people (to be polite to LinkedIn).
+5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the tab open and let it run. By default, the extension uses a conservative **`safe`** throttle profile (about 4–7 seconds per person, 60-second pause every 12 people) to reduce LinkedIn rate-limit risk.
 6. When it's done, you'll see a summary like `Added photos for 43 of 47 people. 4 failed.` You can click **Retry failed** to try the stragglers again.
 
 ---
@@ -123,8 +123,59 @@ This is the easiest Firefox path **if you used Option A**:
 
 - The extension **only ever fetches** URLs that match `https://www.linkedin.com/in/*`. Nothing else.
 - All data (profile HTML, photos, everything) stays on your computer. It's handed to reknown via `window.postMessage` and reknown stores it in IndexedDB — same place as every other photo you'd add manually.
-- Throttling is built in: 2–4 seconds between requests, 30-second pause every 25 requests, instant abort on any rate-limit or login-wall response.
+- Throttling is built in with profiles. Default is `safe`: ~4–7 seconds between requests, 60-second pause every 12 requests, instant abort on any rate-limit or login-wall response.
 - The content script only runs on reknown's origins. It won't interfere with LinkedIn browsing, even though it has permission to fetch from LinkedIn in the background.
+
+---
+
+## Throttle profiles (until UI toggle exists)
+
+The extension supports two profiles:
+
+- `safe` (**default**) — slower and safer for LinkedIn:
+  - `perRequestMinMs=4000`
+  - `perRequestJitterMs=3000` (so each request waits ~4–7s)
+  - `batchSize=12`
+  - `batchPauseMs=60000`
+- `normal` — legacy/faster behavior:
+  - `perRequestMinMs=2000`
+  - `perRequestJitterMs=2000` (so each request waits ~2–4s)
+  - `batchSize=25`
+  - `batchPauseMs=30000`
+
+### Switch profile from the web app page (message-based)
+
+Open DevTools Console on the reknown tab and run:
+
+```js
+window.postMessage({
+  type: 'REKNOWN_ENRICH_SET_PROFILE',
+  profile: 'safe', // or 'normal'
+  requestId: 'profile-' + Date.now()
+}, window.location.origin);
+```
+
+Then listen for the ack:
+
+```js
+window.addEventListener('message', (event) => {
+  if (event.origin !== window.location.origin) return;
+  if (event.data?.type === 'REKNOWN_ENRICH_PROFILE') {
+    console.log('profile response', event.data);
+  }
+});
+```
+
+To fetch the current profile/config:
+
+```js
+window.postMessage({
+  type: 'REKNOWN_ENRICH_GET_PROFILE',
+  requestId: 'profile-get-' + Date.now()
+}, window.location.origin);
+```
+
+Profile is persisted in extension local storage and reused on the next browser/session start.
 
 ---
 

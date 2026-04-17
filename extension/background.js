@@ -5,6 +5,26 @@ const browserApi = globalThis.browser || globalThis.chrome;
 
 // Single source of truth for the extension version: the manifest.
 const EXT_VERSION = browserApi.runtime.getManifest().version;
+const THROTTLE_STORAGE_KEY = 'reknownEnrichThrottleProfile';
+const THROTTLE_PROFILES = {
+  normal: {
+    perRequestMinMs: 2000,
+    perRequestJitterMs: 2000,
+    batchSize: 25,
+    batchPauseMs: 30000,
+    rateLimitCooldownMs: 20 * 60 * 1000,
+  },
+  // Default for LinkedIn enrichment: slower cadence lowers risk of authwall /
+  // anti-automation responses during long runs.
+  safe: {
+    perRequestMinMs: 4000,
+    perRequestJitterMs: 3000,
+    batchSize: 12,
+    batchPauseMs: 60000,
+    rateLimitCooldownMs: 20 * 60 * 1000,
+  },
+};
+const DEFAULT_THROTTLE_PROFILE = 'safe';
 
 // Startup environment snapshot: confirms we're running in the expected
 // browser with the expected feature set (createImageBitmap, OffscreenCanvas,
@@ -60,17 +80,120 @@ browserApi.runtime.onConnect.addListener((port) => {
 
 const LINKEDIN_PROFILE_RE = /^https:\/\/(www\.)?linkedin\.com\/in\/[^\s?#]+/i;
 const DEFAULT_AVATAR_MARKERS = ['ghost-person', 'ghosts/person', 'default-avatar', 'anon-user'];
-const PER_REQUEST_MIN_MS = 2000;
-const PER_REQUEST_JITTER_MS = 2000;
-const BATCH_SIZE = 25;
-const BATCH_PAUSE_MS = 30000;
 const MAX_PHOTO_DIM = 400;
-const RATE_LIMIT_COOLDOWN_MS = 20 * 60 * 1000;
 const DEBUG_VERBOSE = true;
 
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
 let rateLimitCooldownUntil = 0;
+let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
+let throttleConfigReadyPromise = null;
+
+function getThrottleProfileConfig(profileName) {
+  const requested = String(profileName || '');
+  const resolvedProfile = Object.prototype.hasOwnProperty.call(THROTTLE_PROFILES, requested)
+    ? requested
+    : DEFAULT_THROTTLE_PROFILE;
+  const base = THROTTLE_PROFILES[resolvedProfile];
+  return {
+    requestedProfile: requested || null,
+    profile: resolvedProfile,
+    perRequestMinMs: base.perRequestMinMs,
+    perRequestJitterMs: base.perRequestJitterMs,
+    perRequestMaxMs: base.perRequestMinMs + base.perRequestJitterMs,
+    batchSize: base.batchSize,
+    batchPauseMs: base.batchPauseMs,
+    rateLimitCooldownMs: base.rateLimitCooldownMs,
+  };
+}
+
+function getActiveThrottleConfig() {
+  return getThrottleProfileConfig(activeThrottleProfile);
+}
+
+function loadStoredThrottleProfile() {
+  return new Promise((resolve) => {
+    try {
+      browserApi.storage.local.get([THROTTLE_STORAGE_KEY], (items) => {
+        const lastErr = browserApi.runtime.lastError;
+        if (lastErr) {
+          console.warn('[reknown-ext] throttle profile storage get failed', lastErr.message);
+          resolve(DEFAULT_THROTTLE_PROFILE);
+          return;
+        }
+        const stored = items ? items[THROTTLE_STORAGE_KEY] : null;
+        resolve(stored || DEFAULT_THROTTLE_PROFILE);
+      });
+    } catch (err) {
+      console.warn('[reknown-ext] throttle profile storage get threw', String(err));
+      resolve(DEFAULT_THROTTLE_PROFILE);
+    }
+  });
+}
+
+function persistThrottleProfile(profileName) {
+  return new Promise((resolve) => {
+    try {
+      const payload = {};
+      payload[THROTTLE_STORAGE_KEY] = profileName;
+      browserApi.storage.local.set(payload, () => {
+        const lastErr = browserApi.runtime.lastError;
+        if (lastErr) {
+          console.warn('[reknown-ext] throttle profile storage set failed', lastErr.message);
+          resolve(false);
+          return;
+        }
+        resolve(true);
+      });
+    } catch (err) {
+      console.warn('[reknown-ext] throttle profile storage set threw', String(err));
+      resolve(false);
+    }
+  });
+}
+
+async function setThrottleProfile(profileName, options) {
+  const config = getThrottleProfileConfig(profileName);
+  activeThrottleProfile = config.profile;
+  const persist = !options || options.persist !== false;
+  const persisted = persist ? await persistThrottleProfile(config.profile) : false;
+  console.log(
+    '[reknown-ext] throttle profile applied',
+    'profile=' + config.profile,
+    'requested=' + (config.requestedProfile || 'n/a'),
+    'persist=' + persist,
+    'persisted=' + persisted,
+    'config=' + JSON.stringify(config),
+  );
+  return { profile: config.profile, config, persisted };
+}
+
+async function ensureThrottleConfigReady() {
+  if (!throttleConfigReadyPromise) {
+    throttleConfigReadyPromise = (async () => {
+      const storedProfile = await loadStoredThrottleProfile();
+      return setThrottleProfile(storedProfile, { persist: false });
+    })();
+  }
+  return throttleConfigReadyPromise;
+}
+
+ensureThrottleConfigReady()
+  .then((info) => {
+    const cfg = info && info.config ? info.config : getActiveThrottleConfig();
+    console.log(
+      '[reknown-ext] background startup throttle',
+      'profile=' + cfg.profile,
+      'perRequestMinMs=' + cfg.perRequestMinMs,
+      'perRequestMaxMs=' + cfg.perRequestMaxMs,
+      'batchSize=' + cfg.batchSize,
+      'batchPauseMs=' + cfg.batchPauseMs,
+      'rateLimitCooldownMs=' + cfg.rateLimitCooldownMs,
+    );
+  })
+  .catch((err) => {
+    console.warn('[reknown-ext] throttle startup init failed', String(err));
+  });
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,12 +242,14 @@ function getRateLimitCooldownMeta(nowMs) {
 }
 
 function setRateLimitCooldown(nowMs) {
+  const throttleCfg = getActiveThrottleConfig();
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
-  rateLimitCooldownUntil = now + RATE_LIMIT_COOLDOWN_MS;
+  rateLimitCooldownUntil = now + throttleCfg.rateLimitCooldownMs;
   const meta = getRateLimitCooldownMeta(now);
   console.warn(
     '[reknown-ext] rate-limit cooldown enabled',
-    'durationMs=' + RATE_LIMIT_COOLDOWN_MS,
+    'profile=' + throttleCfg.profile,
+    'durationMs=' + throttleCfg.rateLimitCooldownMs,
     'cooldownUntil=' + new Date(rateLimitCooldownUntil).toISOString(),
     'remainingMs=' + meta.cooldownRemainingMs,
   );
@@ -1230,6 +1355,8 @@ async function enrichOne(person) {
 }
 
 async function runBatch(requestId, people, tabId) {
+  await ensureThrottleConfigReady();
+  const throttleCfg = getActiveThrottleConfig();
   const batch = { cancelled: false };
   activeBatches.set(requestId, batch);
   const batchStart = Date.now();
@@ -1239,6 +1366,8 @@ async function runBatch(requestId, people, tabId) {
     'tabId=' + tabId,
     'ext=' + EXT_VERSION,
     'DEBUG_VERBOSE=' + DEBUG_VERBOSE,
+    'profile=' + throttleCfg.profile,
+    'throttle=' + JSON.stringify(throttleCfg),
   );
   // Log the shape of the first few person objects — a malformed payload
   // from the web app is a plausible silent-failure source.
@@ -1343,19 +1472,20 @@ async function runBatch(requestId, people, tabId) {
       }
       // Throttle before next request (skip after last).
       if (i < people.length - 1) {
-        const delay = PER_REQUEST_MIN_MS + Math.random() * PER_REQUEST_JITTER_MS;
+        const delay = throttleCfg.perRequestMinMs + Math.random() * throttleCfg.perRequestJitterMs;
         await sleepCancellable(delay, batch);
         if (batch.cancelled) break;
-        if ((i + 1) % BATCH_SIZE === 0) {
+        if ((i + 1) % throttleCfg.batchSize === 0) {
           sendToTab(tabId, {
             type: 'REKNOWN_ENRICH_PROGRESS',
             requestId,
             status: 'batch_pause',
             index: i,
             total: people.length,
-            pauseMs: BATCH_PAUSE_MS,
+            pauseMs: throttleCfg.batchPauseMs,
+            profile: throttleCfg.profile,
           });
-          await sleepCancellable(BATCH_PAUSE_MS, batch);
+          await sleepCancellable(throttleCfg.batchPauseMs, batch);
         }
       }
     }
@@ -1364,6 +1494,8 @@ async function runBatch(requestId, people, tabId) {
       'success=' + success,
       'failed=' + failed,
       'aborted=' + batch.cancelled,
+      'profile=' + throttleCfg.profile,
+      'throttle=' + JSON.stringify(throttleCfg),
     );
     sendToTab(tabId, {
       type: 'REKNOWN_ENRICH_COMPLETE',
@@ -1396,6 +1528,43 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       'tabId=' + tabId,
       'people=' + (Array.isArray(msg.people) ? msg.people.length : 0),
     );
+  }
+  if (msg.type === 'REKNOWN_ENRICH_GET_PROFILE') {
+    ensureThrottleConfigReady()
+      .then(() => {
+        const cfg = getActiveThrottleConfig();
+        sendResponse({ ok: true, profile: cfg.profile, config: cfg });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, error: 'profile_init_failed', detail: String(err) });
+      });
+    return true;
+  }
+  if (msg.type === 'REKNOWN_ENRICH_SET_PROFILE') {
+    const requestedProfile = msg.profile;
+    if (activeBatches.size > 0) {
+      const activeRequestIds = Array.from(activeBatches.keys());
+      sendResponse({
+        ok: false,
+        error: 'batch_active',
+        activeRequestIds,
+      });
+      return;
+    }
+    ensureThrottleConfigReady()
+      .then(() => setThrottleProfile(requestedProfile, { persist: true }))
+      .then((result) => {
+        sendResponse({
+          ok: true,
+          profile: result.profile,
+          config: result.config,
+          persisted: result.persisted,
+        });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, error: 'profile_set_failed', detail: String(err) });
+      });
+    return true;
   }
   if (msg.type === 'REKNOWN_ENRICH_REQUEST') {
     if (typeof tabId !== 'number') {
@@ -1460,7 +1629,8 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
   if (msg.type === 'REKNOWN_PING') {
-    sendResponse({ ok: true, version: EXT_VERSION });
+    const cfg = getActiveThrottleConfig();
+    sendResponse({ ok: true, version: EXT_VERSION, profile: cfg.profile, config: cfg });
     return;
   }
 });
