@@ -7,7 +7,7 @@ import { PeopleList } from './components/people/PeopleList';
 import { EnrichPhotosPanel } from './components/people/EnrichPhotosPanel';
 import { EspnRosterPanel } from './components/people/EspnRosterPanel';
 import { CivicRepresentativesPanel } from './components/people/CivicRepresentativesPanel';
-import { WebTeamImportPanel } from './components/people/WebTeamImportPanel';
+import { WebTeamPagePanel } from './components/people/WebTeamPagePanel';
 import { CategoryTabs } from './components/people/CategoryTabs';
 import { CategoryHeader } from './components/people/CategoryHeader';
 import { NewCategoryDialog } from './components/people/NewCategoryDialog';
@@ -257,7 +257,7 @@ function PeoplePage({
               onImported={peopleState.refresh}
             />
           ) : activeCategory.enrichMethod === 'web_team_page' ? (
-            <WebTeamImportPanel
+            <WebTeamPagePanel
               category={activeCategory}
               people={peopleInCategory}
               onImported={peopleState.refresh}
