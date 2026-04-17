@@ -1,4 +1,5 @@
 export type WebTeamProvider = 'vast';
+export type WebTeamDiscoverySource = 'yc_directory';
 
 /**
  * Normalized team-member shape consumed by importer UI and storage helpers.
@@ -16,4 +17,32 @@ export interface WebTeamPersonRecord {
 export interface ImportWebTeamPageInput {
   provider?: WebTeamProvider | string;
   url: string;
+}
+
+/**
+ * Candidate discovered from external company directories (e.g. YC).
+ * These URLs are untrusted until validated against a web-team provider.
+ */
+export interface DiscoveredWebTeamCandidate {
+  source: WebTeamDiscoverySource;
+  companyName: string;
+  companyUrl: string;
+  externalId?: string;
+}
+
+export interface PreparedWebTeamSectionInput {
+  name: string;
+  provider: WebTeamProvider;
+  url: string;
+  source: WebTeamDiscoverySource;
+}
+
+export interface RejectedWebTeamCandidate {
+  candidate: DiscoveredWebTeamCandidate;
+  reason: string;
+}
+
+export interface PrepareWebTeamSectionImportsResult {
+  accepted: PreparedWebTeamSectionInput[];
+  rejected: RejectedWebTeamCandidate[];
 }
