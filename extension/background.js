@@ -82,6 +82,7 @@ const LINKEDIN_PROFILE_RE = /^https:\/\/(www\.)?linkedin\.com\/in\/[^\s?#]+/i;
 const DEFAULT_AVATAR_MARKERS = ['ghost-person', 'ghosts/person', 'default-avatar', 'anon-user'];
 const MAX_PHOTO_DIM = 400;
 const DEBUG_VERBOSE = true;
+const DEBUG_ENABLE_LEGACY_VECTOR_WINDOW_FALLBACK = false;
 
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
@@ -523,99 +524,18 @@ function extractFromVectorImage(html, slug) {
     );
   }
 
-  // Find rootUrl values that point at the profile displayphoto base.
-  // Explicitly excludes profile-displaybackgroundimage-shrink_ (banners)
-  // by requiring `profile-displayphoto-shrink_` verbatim.
-  const rootUrlRe = /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_)"/g;
-  const candidates = [];
-  let rootMatch;
-  let rootUrlCount = 0;
+  const objectExtraction = extractVectorCandidatesFromObjects(decoded, slug);
+  let candidates = objectExtraction.candidates;
+  let winningExtractor = 'object';
 
-  while ((rootMatch = rootUrlRe.exec(decoded)) !== null) {
-    rootUrlCount++;
-    const rootUrl = rootMatch[1];
-    const beforeRoot = rootMatch.index;
-    const afterRoot = rootMatch.index + rootMatch[0].length;
-
-    // Bidirectional search window: LinkedIn's current JSON serialization
-    // places `artifacts: [...]` BEFORE `rootUrl` inside the same
-    // VectorImage object — the previous forward-only search explained
-    // `segmentsFound=0` across all 3 rootUrls. Widen to ±4 KB around the
-    // rootUrl. If we grab segments from a sibling VectorImage, they still
-    // reconstruct against THIS rootUrl, so we can't produce a URL for a
-    // different profile.
-    const windowStart = Math.max(0, beforeRoot - 4000);
-    const windowEnd = Math.min(decoded.length, afterRoot + 4000);
-    const backwardWindow = decoded.substring(windowStart, beforeRoot);
-    const forwardWindow = decoded.substring(afterRoot, windowEnd);
-
-    const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
-    const windowSegments = [];
-
-    // Backward scan
-    let bwMatch;
-    let bwCount = 0;
-    while ((bwMatch = segRe.exec(backwardWindow)) !== null) {
-      bwCount++;
-      windowSegments.push({ direction: 'backward', segment: bwMatch[1], offset: bwMatch.index });
-    }
-    // Forward scan (reset regex state with a fresh regex to avoid lastIndex
-    // confusion between the two string inputs).
-    const segReFwd = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
-    let fwMatch;
-    let fwCount = 0;
-    while ((fwMatch = segReFwd.exec(forwardWindow)) !== null) {
-      fwCount++;
-      windowSegments.push({ direction: 'forward', segment: fwMatch[1], offset: fwMatch.index });
-    }
-
-    let segsForRoot = 0;
-    for (let si = 0; si < windowSegments.length; si++) {
-      const segment = windowSegments[si].segment;
-      const fullUrl = rootUrl + segment;
-      const dimMatch = segment.match(/^(\d+)_(\d+)\//);
-      const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
-      const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
-      const hasSig = fullUrl.includes('&v=') && fullUrl.includes('&t=');
-      const hasExpiry = fullUrl.includes('?e=');
-      const hasResidualEntity = /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment);
-      if (DEBUG_VERBOSE) {
-        console.log(
-          '[reknown-ext] vector-image: candidate root#' + (rootUrlCount - 1)
-            + ' dir=' + windowSegments[si].direction
-            + ' dims=' + width + 'x' + height
-            + ' hasSig=' + hasSig
-            + ' hasExpiry=' + hasExpiry
-            + ' residualEntity=' + hasResidualEntity
-            + ' segPrefix=' + segment.substring(0, 48)
-            + ' segLen=' + segment.length,
-        );
-      }
-      candidates.push({
-        url: fullUrl,
-        width: width,
-        height: height,
-        hasSig: hasSig,
-        hasExpiry: hasExpiry,
-        hasResidualEntity: hasResidualEntity,
-        rootIndex: rootUrlCount - 1,
-        rootOffset: rootMatch.index,
-        direction: windowSegments[si].direction,
-      });
-      segsForRoot++;
-    }
-
-    if (DEBUG_VERBOSE) {
-      console.log(
-        '[reknown-ext] vector-image: rootUrl #' + (rootUrlCount - 1) + ' at offset=' + rootMatch.index,
-        'rootUrlLen=' + rootUrl.length,
-        'segmentsFound=' + segsForRoot,
-        'backward=' + bwCount,
-        'forward=' + fwCount,
-        'windowStart=' + windowStart,
-        'windowEnd=' + windowEnd,
-        'rootUrl=' + rootUrl.substring(0, 110),
-      );
+  // Keep the old window-based matcher as an opt-in debug fallback only.
+  // This allows temporary side-by-side troubleshooting without depending on
+  // substring windows in normal operation.
+  if (candidates.length === 0 && DEBUG_ENABLE_LEGACY_VECTOR_WINDOW_FALLBACK) {
+    const legacyCandidates = extractVectorCandidatesByWindow(decoded);
+    if (legacyCandidates.length > 0) {
+      candidates = legacyCandidates;
+      winningExtractor = 'legacy-window-fallback';
     }
   }
 
@@ -630,7 +550,10 @@ function extractFromVectorImage(html, slug) {
       const hasVectorImage = decoded.indexOf('VectorImage') !== -1;
       console.warn(
         '[reknown-ext] vector-image: no candidates',
-        'rootUrlCount=' + rootUrlCount,
+        'rootUrlCount=' + objectExtraction.rootUrlCount,
+        'objectGroups=' + objectExtraction.objectGroupCount,
+        'legacyFallbackEnabled=' + DEBUG_ENABLE_LEGACY_VECTOR_WINDOW_FALLBACK,
+        'selectedExtractor=' + winningExtractor,
         'anyLicdnRootUrl=' + anyLicdnRootUrl,
         'displayPhotoRoot=' + displayPhotoRoot,
         'hasFilePathSeg=' + hasFilePathSeg,
@@ -671,7 +594,8 @@ function extractFromVectorImage(html, slug) {
     }
     console.log(
       '[reknown-ext] vector-image: ' + candidates.length + ' total candidates, ' + signed.length + ' signed',
-      'sizes=' + JSON.stringify(candidates.map(function (c) { return c.width + 'x' + c.height + (c.hasSig ? 's' : '') + (c.hasExpiry ? 'e' : '') + (c.hasResidualEntity ? '!' : '') + '/' + c.direction.charAt(0); })),
+      'extractor=' + winningExtractor,
+      'sizes=' + JSON.stringify(candidates.map(function (c) { return c.width + 'x' + c.height + (c.hasSig ? 's' : '') + (c.hasExpiry ? 'e' : '') + (c.hasResidualEntity ? '!' : '') + '/' + ((c.direction || 'object').charAt(0)); })),
       'rejectReasons=' + JSON.stringify(rejectReasons),
     );
   }
@@ -700,7 +624,7 @@ function extractFromVectorImage(html, slug) {
     const ownerOffsets = findOwnerOffsets(decoded, slug);
     const ownerSelection = chooseOwnerProximityCandidates(
       signed,
-      function (c) { return c.rootOffset; },
+      function (c) { return typeof c.ownerAnchorOffset === 'number' ? c.ownerAnchorOffset : c.rootOffset; },
       ownerOffsets,
       'vector-image',
     );
@@ -753,12 +677,210 @@ function extractFromVectorImage(html, slug) {
       'dims=' + best.width + 'x' + best.height,
       'urlLen=' + best.url.length,
       'rootIndex=' + best.rootIndex,
+      'extractor=' + (best.extractor || winningExtractor),
+      'groupRange=' + (best.groupStart != null && best.groupEnd != null ? (best.groupStart + '-' + best.groupEnd) : 'n/a'),
+      'groupTargetSlugNearby=' + (best.groupTargetSlugNearby === true),
       'ownerDistance=' + (typeof best.ownerDistance === 'number' ? best.ownerDistance : 'n/a'),
       'url=' + best.url.substring(0, 140),
     );
   }
 
+  console.log('[reknown-ext] vector-image: winning extractor=' + (best.extractor || winningExtractor));
   return best.url;
+}
+
+function extractVectorCandidatesFromObjects(decoded, slug) {
+  const rootUrlRe = /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_)"/g;
+  const objectRanges = buildJsonObjectRanges(decoded);
+  const candidates = [];
+  let rootMatch;
+  let rootUrlCount = 0;
+  let objectGroupCount = 0;
+
+  while ((rootMatch = rootUrlRe.exec(decoded)) !== null) {
+    const rootIndex = rootUrlCount;
+    rootUrlCount++;
+    const rootUrl = rootMatch[1];
+    const rootOffset = rootMatch.index;
+    const objectRange = findNarrowestContainingRange(objectRanges, rootOffset);
+    if (!objectRange) continue;
+
+    const objectText = decoded.substring(objectRange.start, objectRange.end + 1);
+    const artifactsMatch = objectText.match(/"artifacts"\s*:\s*\[([\s\S]*?)\]/);
+    if (!artifactsMatch) continue;
+
+    objectGroupCount++;
+    const artifactsBody = artifactsMatch[1];
+    const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    const groupMeta = getVectorGroupContext(decoded, objectRange.start, objectRange.end, slug);
+    let segMatch;
+    let segCount = 0;
+    while ((segMatch = segRe.exec(artifactsBody)) !== null) {
+      const segment = segMatch[1];
+      const fullUrl = rootUrl + segment;
+      const dimMatch = segment.match(/^(\d+)_(\d+)\//);
+      const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
+      const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
+      const hasSig = fullUrl.includes('&v=') && fullUrl.includes('&t=');
+      const hasExpiry = fullUrl.includes('?e=');
+      const hasResidualEntity = /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment);
+      candidates.push({
+        url: fullUrl,
+        width: width,
+        height: height,
+        hasSig: hasSig,
+        hasExpiry: hasExpiry,
+        hasResidualEntity: hasResidualEntity,
+        rootIndex: rootIndex,
+        rootOffset: rootOffset,
+        ownerAnchorOffset: Math.floor((objectRange.start + objectRange.end) / 2),
+        extractor: 'object',
+        groupStart: objectRange.start,
+        groupEnd: objectRange.end,
+        groupTargetSlugNearby: groupMeta.targetSlugNearby,
+        nearbyPublicIdentifiers: groupMeta.publicIdentifiers,
+        nearbyMiniProfileRefs: groupMeta.miniProfileRefs,
+        direction: 'object',
+      });
+      segCount++;
+    }
+
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] vector-image: object-group root#' + rootIndex,
+        'range=' + objectRange.start + '-' + objectRange.end,
+        'rootOffset=' + rootOffset,
+        'segmentsFound=' + segCount,
+        'targetSlugNearby=' + groupMeta.targetSlugNearby,
+        'publicIdentifiers=' + JSON.stringify(groupMeta.publicIdentifiers),
+        'miniProfileRefs=' + groupMeta.miniProfileRefs,
+      );
+    }
+  }
+
+  return { candidates: candidates, rootUrlCount: rootUrlCount, objectGroupCount: objectGroupCount };
+}
+
+function extractVectorCandidatesByWindow(decoded) {
+  const rootUrlRe = /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_)"/g;
+  const candidates = [];
+  let rootMatch;
+  let rootUrlCount = 0;
+
+  while ((rootMatch = rootUrlRe.exec(decoded)) !== null) {
+    rootUrlCount++;
+    const rootUrl = rootMatch[1];
+    const beforeRoot = rootMatch.index;
+    const afterRoot = rootMatch.index + rootMatch[0].length;
+    const windowStart = Math.max(0, beforeRoot - 4000);
+    const windowEnd = Math.min(decoded.length, afterRoot + 4000);
+    const backwardWindow = decoded.substring(windowStart, beforeRoot);
+    const forwardWindow = decoded.substring(afterRoot, windowEnd);
+    const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    const windowSegments = [];
+    let bwMatch;
+    while ((bwMatch = segRe.exec(backwardWindow)) !== null) {
+      windowSegments.push({ direction: 'backward', segment: bwMatch[1] });
+    }
+    const segReFwd = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    let fwMatch;
+    while ((fwMatch = segReFwd.exec(forwardWindow)) !== null) {
+      windowSegments.push({ direction: 'forward', segment: fwMatch[1] });
+    }
+    for (let si = 0; si < windowSegments.length; si++) {
+      const segment = windowSegments[si].segment;
+      const fullUrl = rootUrl + segment;
+      const dimMatch = segment.match(/^(\d+)_(\d+)\//);
+      const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
+      const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
+      candidates.push({
+        url: fullUrl,
+        width: width,
+        height: height,
+        hasSig: fullUrl.includes('&v=') && fullUrl.includes('&t='),
+        hasExpiry: fullUrl.includes('?e='),
+        hasResidualEntity: /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment),
+        rootIndex: rootUrlCount - 1,
+        rootOffset: rootMatch.index,
+        ownerAnchorOffset: rootMatch.index,
+        extractor: 'legacy-window-fallback',
+        direction: windowSegments[si].direction,
+      });
+    }
+  }
+  if (DEBUG_VERBOSE && candidates.length > 0) {
+    console.warn(
+      '[reknown-ext] vector-image: used legacy window fallback',
+      'candidateCount=' + candidates.length,
+    );
+  }
+  return candidates;
+}
+
+function buildJsonObjectRanges(text) {
+  const ranges = [];
+  const stack = [];
+  let inString = false;
+  let escaping = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charAt(i);
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === '\\') {
+        escaping = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') {
+      stack.push(i);
+      continue;
+    }
+    if (ch === '}') {
+      if (stack.length > 0) {
+        const start = stack.pop();
+        ranges.push({ start: start, end: i, length: i - start + 1 });
+      }
+    }
+  }
+  return ranges;
+}
+
+function findNarrowestContainingRange(ranges, offset) {
+  let best = null;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (r.start <= offset && r.end >= offset) {
+      if (!best || r.length < best.length) best = r;
+    }
+  }
+  return best;
+}
+
+function getVectorGroupContext(decoded, groupStart, groupEnd, slug) {
+  const contextStart = Math.max(0, groupStart - 1500);
+  const contextEnd = Math.min(decoded.length, groupEnd + 1500);
+  const context = decoded.substring(contextStart, contextEnd);
+  const publicIdentifiers = [];
+  const pidRe = /"publicIdentifier"\s*:\s*"([^"]+)"/g;
+  let pidMatch;
+  while ((pidMatch = pidRe.exec(context)) !== null) {
+    const pid = pidMatch[1];
+    if (publicIdentifiers.indexOf(pid) === -1) publicIdentifiers.push(pid);
+    if (publicIdentifiers.length >= 5) break;
+  }
+  const slugPattern = slug ? new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(slug) + '"', 'i') : null;
+  return {
+    publicIdentifiers: publicIdentifiers,
+    miniProfileRefs: countOccurrences(context, 'MiniProfile') + countOccurrences(context, 'miniProfile'),
+    targetSlugNearby: slugPattern ? slugPattern.test(context) : false,
+  };
 }
 
 function extractFromLicdnRegex(html, slug) {
