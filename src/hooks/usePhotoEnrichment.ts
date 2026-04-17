@@ -20,7 +20,11 @@ export interface EnrichResult {
   id: string;
   name: string;
   status: 'success' | 'error';
-  error?: EnrichErrorCode;
+  error?: EnrichErrorCode | string;
+  errorDetail?: {
+    reason?: string;
+    dominantRejectReason?: string;
+  };
 }
 
 export interface EnrichProgress {
@@ -52,6 +56,35 @@ const INITIAL_PROGRESS: EnrichProgress = {
   currentPerson: null,
 };
 
+function normalizeEnrichError(
+  error: unknown,
+): Pick<EnrichResult, 'error' | 'errorDetail'> {
+  if (typeof error === 'string') {
+    return { error };
+  }
+  if (error && typeof error === 'object') {
+    const errorObject = error as {
+      code?: unknown;
+      reason?: unknown;
+      dominantRejectReason?: unknown;
+    };
+    const errorCode =
+      typeof errorObject.code === 'string' && errorObject.code.trim()
+        ? errorObject.code
+        : 'unknown_error';
+    const errorDetail: EnrichResult['errorDetail'] = {
+      reason: typeof errorObject.reason === 'string' ? errorObject.reason : undefined,
+      dominantRejectReason:
+        typeof errorObject.dominantRejectReason === 'string'
+          ? errorObject.dominantRejectReason
+          : undefined,
+    };
+    const hasErrorDetail = !!(errorDetail.reason || errorDetail.dominantRejectReason);
+    return hasErrorDetail ? { error: errorCode, errorDetail } : { error: errorCode };
+  }
+  return { error: 'unknown_error' };
+}
+
 export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions) {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState<EnrichProgress>(INITIAL_PROGRESS);
@@ -78,7 +111,14 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             status?: string;
             photoDataUrl?: string;
             photoUrl?: string;
-            error?: EnrichErrorCode;
+            error?:
+              | EnrichErrorCode
+              | string
+              | {
+                  code?: string;
+                  reason?: string;
+                  dominantRejectReason?: string;
+                };
             aborted?: boolean;
             reason?: string;
             summary?: { total: number; success: number; failed: number };
@@ -129,9 +169,16 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
           return;
         }
         if (data.status === 'error' && data.personId) {
+          const normalized = normalizeEnrichError(data.error);
           setResults((r) => [
             ...r,
-            { id: data.personId!, name: data.personName ?? '', status: 'error', error: data.error },
+            {
+              id: data.personId!,
+              name: data.personName ?? '',
+              status: 'error',
+              error: normalized.error,
+              errorDetail: normalized.errorDetail,
+            },
           ]);
           setProgress((p) => ({
             ...p,
@@ -158,12 +205,13 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
       if (data.type === 'REKNOWN_ENRICH_REJECTED') {
         console.warn(
           '[reknown] ENRICH_REJECTED requestId=' + (data.requestId || ''),
-          'error=' + (data.error || ''),
+          'error=' + (typeof data.error === 'string' ? data.error : JSON.stringify(data.error || {})),
           'activeRequestIds=' + JSON.stringify(data.activeRequestIds || []),
         );
+        const normalized = normalizeEnrichError(data.error);
         setIsRunning(false);
         setCompleted(true);
-        setAborted({ reason: data.error || 'unknown', cooldown: data.cooldown });
+        setAborted({ reason: normalized.error || 'unknown_error', cooldown: data.cooldown });
         requestIdRef.current = null;
       }
     }

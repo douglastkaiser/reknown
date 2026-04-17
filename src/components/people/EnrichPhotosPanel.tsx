@@ -32,6 +32,13 @@ function formatCooldown(minutesFromNowMs: number | undefined): string {
   return `${mins} minute${mins === 1 ? '' : 's'}`;
 }
 
+function formatFailureError(error?: string, reason?: string): string {
+  const normalized = typeof error === 'string' && error.trim() ? error : 'unknown_error';
+  const label = ERROR_LABELS[normalized as EnrichErrorCode] ?? normalized;
+  const shouldAppendReason = !ERROR_LABELS[normalized as EnrichErrorCode] && reason;
+  return shouldAppendReason ? `${label} (${reason})` : label;
+}
+
 export function EnrichPhotosPanel({
   people,
   onUpdate,
@@ -293,7 +300,10 @@ export function EnrichPhotosPanel({
                   {failedResults.map((r) => (
                     <li key={r.id} className="text-muted">
                       {r.name || r.id}:{' '}
-                      {r.error ? ERROR_LABELS[r.error] ?? r.error : 'unknown'}
+                      {formatFailureError(
+                        r.error,
+                        r.errorDetail?.reason ?? r.errorDetail?.dominantRejectReason,
+                      )}
                     </li>
                   ))}
                 </ul>
