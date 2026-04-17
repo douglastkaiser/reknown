@@ -3,6 +3,7 @@ import type { Person } from '../../types';
 import { Button } from '../common/Button';
 import { PhotoUpload } from './PhotoUpload';
 import { capitalizeName, parseNicknames } from '../../lib/text';
+import { detectPhotoFocus } from '../../lib/face-focus';
 
 export function PeopleForm({
   categoryId,
@@ -22,14 +23,18 @@ export function PeopleForm({
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    const normalizedPhotoDataUrl = photoDataUrl || undefined;
+    const normalizedPhotoUrl = photoUrl.trim() || undefined;
+    const photoFocus = await detectPhotoFocus(normalizedPhotoDataUrl ?? normalizedPhotoUrl);
     await onSave({
       name: capitalizeName(name),
       categoryId,
       nicknames: parseNicknames(nicknames),
       headline,
       company,
-      photoDataUrl: photoDataUrl || undefined,
-      photoUrl: photoUrl.trim() || undefined,
+      photoDataUrl: normalizedPhotoDataUrl,
+      photoUrl: normalizedPhotoUrl,
+      photoFocus,
       linkedinUrl: linkedinUrl.trim() || undefined,
     });
     setName('');

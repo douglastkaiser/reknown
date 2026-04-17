@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { Person } from '../../types';
 import { Button } from '../common/Button';
+import { FacePhoto } from '../common/FacePhoto';
 
 export function CardBack({
   person,
@@ -29,11 +30,11 @@ export function CardBack({
 
       <div className="flex flex-col items-center gap-3">
         {photoUrl ? (
-          <img
+          <FacePhoto
             src={photoUrl}
             alt={person.name}
-            className="h-32 w-32 rounded-full object-cover md:h-40 md:w-40"
-            style={{ objectPosition: 'center 25%' }}
+            containerClassName="h-32 w-32 rounded-full md:h-40 md:w-40"
+            focus={person.photoFocus}
           />
         ) : null}
         <h3 className="text-xl font-bold text-text">{person.name}</h3>

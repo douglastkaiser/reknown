@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { Button } from '../common/Button';
 import { resizeToJpeg, urlToData } from '../../lib/image';
+import { FacePhoto } from '../common/FacePhoto';
 
 export function PhotoUpload({ value, onChange }: { value?: string; onChange: (val: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -36,7 +37,7 @@ export function PhotoUpload({ value, onChange }: { value?: string; onChange: (va
         }}>URL</Button>
       </div>
       <input ref={inputRef} className="hidden" type="file" accept="image/*" onChange={(e) => void handleFile(e.target.files?.[0])} />
-      {value ? <img src={value} alt="preview" className="h-20 w-20 rounded-full object-cover" /> : null}
+      {value ? <FacePhoto src={value} alt="preview" containerClassName="h-20 w-20 rounded-full" /> : null}
     </div>
   );
 }

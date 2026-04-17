@@ -3,6 +3,7 @@ import type { Person, ReviewCard } from '../../types';
 import type { GuessResult } from '../../hooks/useReviewSession';
 import { Button } from '../common/Button';
 import { CardBack } from './CardBack';
+import { FacePhoto } from '../common/FacePhoto';
 
 export function FaceToNameCard({
   card,
@@ -49,11 +50,11 @@ export function FaceToNameCard({
       <div className="flex flex-col gap-6 md:flex-row md:items-center md:gap-10">
         <div className="flex flex-1 flex-col items-center gap-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted">Who is this person?</p>
-          <img
+          <FacePhoto
             src={photoUrl}
             alt="Person to identify"
-            className="h-56 w-56 rounded-2xl object-cover shadow-lg md:h-72 md:w-72 lg:h-80 lg:w-80"
-            style={{ objectPosition: 'center 25%' }}
+            containerClassName="h-56 w-56 rounded-2xl shadow-lg md:h-72 md:w-72 lg:h-80 lg:w-80"
+            focus={person.photoFocus}
           />
         </div>
 
