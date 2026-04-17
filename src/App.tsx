@@ -255,6 +255,8 @@ function PeoplePage({
               people={peopleInCategory}
               onImported={peopleState.refresh}
             />
+          ) : activeCategory.enrichMethod === 'web_team_page' ? (
+            <></>
           ) : null}
 
           {espnImporting ? (
