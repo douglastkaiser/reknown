@@ -1,21 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { Category, EnrichMethod, EspnSport, EspnTeam } from '../../types';
+import { WEB_TEAM_PROVIDERS } from '../../lib/web-team';
+import type { WebTeamProvider } from '../../lib/web-team';
 import { Button } from '../common/Button';
 import { EspnTeamSelector } from './EspnTeamSelector';
-
-const SUPPORTED_WEB_TEAM_PROVIDERS = {
-  vast: {
-    label: 'Vast',
-    isSupportedUrl: (url: URL) =>
-      url.protocol === 'https:' &&
-      url.hostname === 'www.vastspace.com' &&
-      url.pathname === '/team',
-    validationMessage:
-      'For Vast, URL must be https://www.vastspace.com/team (trailing slash or query is okay).',
-  },
-} as const;
-
-type WebTeamProvider = keyof typeof SUPPORTED_WEB_TEAM_PROVIDERS;
 
 type CreateInput = {
   name: string;
@@ -84,7 +72,7 @@ export function NewCategoryDialog({
 
   const isEspn = method === 'espn_roster';
   const isWebTeamPage = method === 'web_team_page';
-  const selectedWebTeamProvider = SUPPORTED_WEB_TEAM_PROVIDERS[webTeamProvider];
+  const selectedWebTeamProvider = WEB_TEAM_PROVIDERS[webTeamProvider];
   const normalizedWebTeamUrl = webTeamUrl.trim();
   const webTeamUrlError = (() => {
     if (!isWebTeamPage) return '';
@@ -224,7 +212,7 @@ export function NewCategoryDialog({
                   value={webTeamProvider}
                   onChange={(e) => setWebTeamProvider(e.target.value as WebTeamProvider)}
                 >
-                  {Object.entries(SUPPORTED_WEB_TEAM_PROVIDERS).map(([provider, config]) => (
+                  {Object.entries(WEB_TEAM_PROVIDERS).map(([provider, config]) => (
                     <option key={provider} value={provider}>
                       {config.label}
                     </option>
