@@ -3,6 +3,7 @@ import type {
   AccuracyMetric,
   AppStats,
   Category,
+  EntityTombstone,
   Person,
   ReviewCard,
   ReviewEvent,
@@ -18,7 +19,7 @@ import {
 } from './sync-bus';
 
 const DB_NAME = 'reknown-db';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 function canPush(): boolean {
   if (!isSyncActive() || isApplyingRemote()) return false;
@@ -95,6 +96,11 @@ interface ReknownDB extends DBSchema {
     value: SessionSummary;
     indexes: { 'by-timestamp': number };
   };
+  tombstones: {
+    key: string;
+    value: EntityTombstone;
+    indexes: { 'by-deletedAt': number };
+  };
 }
 
 const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
@@ -150,6 +156,11 @@ const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
       if (!eventsStore.indexNames.contains('by-remoteId')) {
         eventsStore.createIndex('by-remoteId', 'remoteId');
       }
+    }
+
+    if (oldVersion < 6) {
+      const tombstones = db.createObjectStore('tombstones', { keyPath: 'id' });
+      tombstones.createIndex('by-deletedAt', 'deletedAt');
     }
   },
 });
@@ -267,8 +278,15 @@ export async function deletePerson(personId: string): Promise<void> {
   const db = await dbPromise;
   const current = await db.get('people', personId);
   if (!current || current.scope !== activeScope) return;
+  const tombstone: EntityTombstone = {
+    id: `people_${personId}`,
+    entityType: 'people',
+    deletedAt: Date.now(),
+    scope: current.scope,
+  };
   await db.delete('people', personId);
-  if (canPush()) getSyncHandlers()?.pushDelete('people', personId);
+  await db.put('tombstones', tombstone);
+  if (canPush()) getSyncHandlers()?.pushTombstone(tombstone);
 }
 
 export async function clearScope(scope: string): Promise<void> {
@@ -520,6 +538,30 @@ export async function listSessionSummariesInScope(scope: string): Promise<Sessio
   return (await db.getAll('sessionSummaries')).filter((s) => s.scope === scope);
 }
 
+export async function listTombstonesInScope(scope: string): Promise<EntityTombstone[]> {
+  const db = await dbPromise;
+  return (await db.getAll('tombstones')).filter((t) => t.scope === scope);
+}
+
+export async function getTombstoneByEntity(
+  scope: string,
+  entityType: EntityTombstone['entityType'],
+  entityId: string,
+): Promise<EntityTombstone | undefined> {
+  const db = await dbPromise;
+  const row = await db.get('tombstones', `${entityType}_${entityId}`);
+  if (!row || row.scope !== scope) return undefined;
+  return row;
+}
+
+export async function upsertTombstone(tombstone: EntityTombstone): Promise<void> {
+  const db = await dbPromise;
+  const existing = await db.get('tombstones', tombstone.id);
+  if (!existing || (existing.deletedAt ?? 0) < (tombstone.deletedAt ?? 0)) {
+    await db.put('tombstones', tombstone);
+  }
+}
+
 /**
  * Write a record arriving from Firestore into IndexedDB without echoing
  * back out as a push. `scope` is always assigned by the caller so remote
@@ -582,6 +624,16 @@ export async function applyRemoteDelete(
       if (existing) await db.delete('reviewEvents', existing.id);
     } else {
       await db.delete(kind, id);
+    }
+  });
+}
+
+export async function applyRemoteTombstone(tombstone: EntityTombstone): Promise<void> {
+  await withApplyingRemote(async () => {
+    const db = await dbPromise;
+    const existing = await db.get('tombstones', tombstone.id);
+    if (!existing || (existing.deletedAt ?? 0) < (tombstone.deletedAt ?? 0)) {
+      await db.put('tombstones', tombstone);
     }
   });
 }

@@ -1,4 +1,11 @@
-import type { Category, Person, ReviewEvent, SessionSummary, Settings } from '../types';
+import type {
+  Category,
+  EntityTombstone,
+  Person,
+  ReviewEvent,
+  SessionSummary,
+  Settings,
+} from '../types';
 
 /**
  * Tiny shim that lets `storage.ts` notify the cloud-sync layer without
@@ -22,6 +29,7 @@ export interface SyncHandlers {
   pushReviewEvent: (event: ReviewEvent) => void;
   pushSessionSummary: (summary: SessionSummary) => void;
   pushDelete: (kind: SyncKind, id: string) => void;
+  pushTombstone: (tombstone: EntityTombstone) => void;
 }
 
 let handlers: SyncHandlers | null = null;

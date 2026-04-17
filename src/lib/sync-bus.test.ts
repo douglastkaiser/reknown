@@ -20,6 +20,7 @@ function makeHandlers(overrides: Partial<SyncHandlers> = {}): SyncHandlers {
     pushReviewEvent: vi.fn(),
     pushSessionSummary: vi.fn(),
     pushDelete: vi.fn(),
+    pushTombstone: vi.fn(),
     ...overrides,
   };
 }
