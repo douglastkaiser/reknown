@@ -1784,12 +1784,14 @@ async function extractFromOverlayPhoto(slug) {
     return { url: null, rejectReason: 'overlay_read_failed' };
   }
   if (DEBUG_VERBOSE) {
+    const contentType = response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '';
     console.log(
       '[reknown-ext] overlay-photo: fetched',
       'slug=' + slug,
       'status=' + response.status,
       'ok=' + response.ok,
       'redirected=' + response.redirected,
+      'contentType=' + contentType.substring(0, 100),
       'fetchMs=' + (Date.now() - fetchStart),
       'htmlLen=' + overlayHtml.length,
       'finalUrl=' + (response.url || '').substring(0, 140),
@@ -1810,19 +1812,36 @@ async function extractFromOverlayPhoto(slug) {
     const modalNodes = doc.querySelectorAll(
       'img.pv-member-photo-modal__content-image, .pv-member-photo-modal__content-image img, img[class*="pv-member-photo-modal__content-image"]',
     );
+    const altNodes = doc.querySelectorAll('img[alt^="Profile photo"], img[alt*="Profile photo"]');
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] overlay-photo: selector hits',
+        'modalClass=' + modalNodes.length,
+        'profilePhotoAlt=' + altNodes.length,
+      );
+    }
     for (let i = 0; i < modalNodes.length; i++) {
       const node = modalNodes[i];
       pushCandidate(node.getAttribute('src'), 'modal-selector:src');
       pushCandidate(node.getAttribute('data-delayed-url'), 'modal-selector:data-delayed-url');
       pushCandidate(node.getAttribute('data-ghost-url'), 'modal-selector:data-ghost-url');
     }
+    for (let i = 0; i < altNodes.length; i++) {
+      const node = altNodes[i];
+      pushCandidate(node.getAttribute('src'), 'profile-photo-alt:src');
+      pushCandidate(node.getAttribute('data-delayed-url'), 'profile-photo-alt:data-delayed-url');
+      pushCandidate(node.getAttribute('data-ghost-url'), 'profile-photo-alt:data-ghost-url');
+    }
   } catch (err) {
     if (DEBUG_VERBOSE) {
       console.warn('[reknown-ext] overlay-photo: selector parse failed', String(err));
     }
   }
-  const regex = /https:\/\/media\.licdn\.com\/dms\/image\/[^"'\\\s<>]*profile-displayphoto[^"'\\\s<>]*/g;
+  const regex = /https:\/\/media\.licdn\.com\/dms\/image\/[^"'\\\s<>]*profile-displayphoto(?:-shrink)?[^"'\\\s<>]*/g;
   const regexMatches = decoded.match(regex) || [];
+  if (DEBUG_VERBOSE) {
+    console.log('[reknown-ext] overlay-photo: strict fallback regex hits', regexMatches.length);
+  }
   for (let i = 0; i < regexMatches.length; i++) {
     pushCandidate(regexMatches[i], 'fallback-regex');
   }
@@ -1832,32 +1851,94 @@ async function extractFromOverlayPhoto(slug) {
     }
     return { url: null, rejectReason: 'overlay_no_displayphoto_artifacts' };
   }
-  const signed = candidates.filter(function (entry) {
-    return entry.url.includes('?e=') && entry.url.includes('&v=') && entry.url.includes('&t=');
-  });
-  if (signed.length === 0) {
+  const evaluateCandidate = function (entry) {
+    const url = entry && typeof entry.url === 'string' ? entry.url : '';
+    const reasons = [];
+    let pass = true;
+    let host = '';
+    try {
+      host = (new URL(url)).hostname.toLowerCase();
+    } catch (_err) {
+      host = '';
+    }
+    if (host === 'media.licdn.com') reasons.push('pass:media.licdn host');
+    else {
+      reasons.push('fail:non-media.licdn host');
+      pass = false;
+    }
+    if (url.includes('&v=') && url.includes('&t=')) reasons.push('pass:signature fields present');
+    else {
+      reasons.push('fail:missing signature fields');
+      pass = false;
+    }
+    if (url.includes('?e=') || url.includes('&e=')) reasons.push('pass:expiry field present');
+    else {
+      reasons.push('fail:missing expiry field');
+      pass = false;
+    }
+    if (/profile-displaybackgroundimage|background-image|cover-photo|ghost-person|ghosts\/person|default-avatar|anon-user/i.test(url)) {
+      reasons.push('fail:obvious non-profile asset');
+      pass = false;
+    } else {
+      reasons.push('pass:not obvious non-profile asset');
+    }
+    reasons.push('pass:owner association probable');
+    const firstFail = reasons.find(function (r) { return r.indexOf('fail:') === 0; }) || '';
+    return {
+      accepted: pass,
+      rejectReason: firstFail ? firstFail.replace(/^fail:/, '') : null,
+      reasons: reasons,
+    };
+  };
+  let firstRejected = null;
+  let selected = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const entry = candidates[i];
+    const assessment = evaluateCandidate(entry);
+    if (assessment.accepted) {
+      selected = {
+        url: entry.url,
+        source: entry.source,
+        reasons: assessment.reasons,
+      };
+      break;
+    }
+    if (!firstRejected) {
+      firstRejected = {
+        url: entry.url,
+        source: entry.source,
+        rejectReason: assessment.rejectReason || 'overlay_candidate_rejected',
+      };
+    }
+  }
+  if (!selected) {
     if (DEBUG_VERBOSE) {
       console.log(
-        '[reknown-ext] overlay-photo: reject reason',
-        'overlay_unsigned_candidates',
-        'candidateCount=' + candidates.length,
+        '[reknown-ext] overlay-photo: first rejected',
+        'source=' + (firstRejected ? firstRejected.source : 'none'),
+        'reason=' + (firstRejected ? firstRejected.rejectReason : 'overlay_no_acceptable_candidates'),
+        'url=' + ((firstRejected && firstRejected.url) ? firstRejected.url.substring(0, 140) : ''),
       );
     }
-    return { url: null, rejectReason: 'overlay_unsigned_candidates' };
+    return { url: null, rejectReason: (firstRejected && firstRejected.rejectReason) || 'overlay_no_acceptable_candidates' };
   }
-  signed.sort(function (a, b) { return b.url.length - a.url.length; });
-  const selected = signed[0];
   if (DEBUG_VERBOSE) {
     console.log(
-      '[reknown-ext] overlay-photo: selected',
+      '[reknown-ext] overlay-photo: first accepted',
       'source=' + selected.source,
-      'candidateCount=' + candidates.length,
-      'signedCount=' + signed.length,
       'urlLen=' + selected.url.length,
       'url=' + selected.url.substring(0, 140),
     );
+    if (firstRejected) {
+      console.log(
+        '[reknown-ext] overlay-photo: first rejected',
+        'source=' + firstRejected.source,
+        'reason=' + firstRejected.rejectReason,
+        'url=' + firstRejected.url.substring(0, 140),
+      );
+    }
   }
-  return { url: selected.url, rejectReason: null };
+  return { url: selected.url, rejectReason: null, source: selected.source, ownerMatch: 'probable', reasons: selected.reasons };
 }
 
 // LinkedIn embeds JSON inside HTML <code>/<script> blocks using a mix of
@@ -2190,7 +2271,6 @@ async function extractPhotoUrl(html, slug) {
     ['profile-img', extractFromProfileImg, 'profile-image-tag'],
     ['vector-image', extractFromVectorImage, 'vector-image-object'],
     ['licdn-regex', extractFromLicdnRegex, 'licdn-root+artifact'],
-    ['overlay-photo', function (_html, strategySlug) { return extractFromOverlayPhoto(strategySlug); }, 'overlay-photo-img'],
   ];
   const outcomes = [];
   const validCandidates = [];
@@ -2258,6 +2338,77 @@ async function extractPhotoUrl(html, slug) {
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
       outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
+    }
+  }
+  if (validCandidates.length === 0) {
+    const overlayStart = Date.now();
+    try {
+      const overlayResult = normalizeStrategyResult(
+        await extractFromOverlayPhoto(slug),
+        'overlay-photo',
+        slug,
+        'overlay-photo-img',
+      );
+      const overlayUrl = overlayResult.url;
+      const dt = Date.now() - overlayStart;
+      if (!overlayUrl) {
+        outcomes.push({
+          strategy: 'overlay-photo',
+          result: 'null',
+          source: overlayResult.source,
+          rejectReason: overlayResult.rejectReason || null,
+          ms: dt,
+        });
+      } else {
+        const host = getUrlHost(overlayUrl);
+        const isMediaLicdn = host === 'media.licdn.com';
+        const hasSig = hasSignatureFields(overlayUrl);
+        const hasExpiry = hasExpiryField(overlayUrl);
+        const dims = parseDimsFromUrl(overlayUrl);
+        const isNonProfileAsset = isObviousNonProfileAsset(overlayUrl);
+        const reasons = [];
+        reasons.push(isMediaLicdn ? 'pass:media.licdn host' : 'fail:non-media.licdn host');
+        reasons.push(hasSig ? 'pass:signature fields present' : 'fail:missing signature fields');
+        reasons.push(hasExpiry ? 'pass:expiry field present' : 'fail:missing expiry field');
+        reasons.push(isNonProfileAsset ? 'fail:obvious non-profile asset' : 'pass:not obvious non-profile asset');
+        if (overlayResult.rejectReason) reasons.push('strategyReject:' + overlayResult.rejectReason);
+        if (overlayResult.ownerMatch === 'mismatch') reasons.push('fail:owner mismatch');
+        if (overlayResult.ownerMatch === 'exact' || overlayResult.ownerMatch === 'probable') reasons.push('pass:owner association ' + overlayResult.ownerMatch);
+        const candidate = {
+          url: overlayUrl,
+          strategy: 'overlay-photo',
+          source: overlayResult.source || 'overlay-photo-img',
+          ownerMatch: overlayResult.ownerMatch || 'unknown',
+          confidence: 0,
+          reasons: overlayResult.reasons.concat(reasons),
+          len: overlayUrl.length,
+          dims: dims,
+          hasSig: hasSig,
+          hasExpiry: hasExpiry,
+          isMediaLicdn: isMediaLicdn,
+          isNonProfileAsset: isNonProfileAsset,
+          rejectReason: overlayResult.rejectReason || null,
+        };
+        candidate.confidence = scoreCandidate(candidate);
+        const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
+        outcomes.push({
+          strategy: 'overlay-photo',
+          result: accepted ? 'candidate-accepted' : 'candidate-rejected',
+          source: candidate.source,
+          ownerMatch: candidate.ownerMatch,
+          confidence: candidate.confidence,
+          rejectReason: candidate.rejectReason,
+          len: candidate.len,
+          dims: candidate.dims ? (candidate.dims.width + 'x' + candidate.dims.height) : null,
+          hasSig: candidate.hasSig,
+          hasExpiry: candidate.hasExpiry,
+          ms: dt,
+        });
+        if (accepted) validCandidates.push(candidate);
+      }
+    } catch (err) {
+      console.warn('[reknown-ext] strategy failed', 'overlay-photo', err);
+      outcomes.push({ strategy: 'overlay-photo', result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - overlayStart });
     }
   }
   validCandidates.sort(function (a, b) { return b.confidence - a.confidence; });
