@@ -2054,15 +2054,89 @@ async function extractPhotoUrl(html, slug) {
   const makeFailure = function (reason, extra) {
     return Object.assign({ url: null, rejectReason: reason || null }, extra || {});
   };
-  const normalizeStrategyResult = function (raw) {
-    if (typeof raw === 'string') return { url: raw, rejectReason: null };
+  const getUrlHost = function (url) {
+    if (!url || typeof url !== 'string') return '';
+    try {
+      return (new URL(url)).hostname.toLowerCase();
+    } catch (_err) {
+      return '';
+    }
+  };
+  const hasSignatureFields = function (url) {
+    return !!url && (url.includes('&v=') && url.includes('&t='));
+  };
+  const hasExpiryField = function (url) {
+    return !!url && (url.includes('?e=') || url.includes('&e='));
+  };
+  const parseDimsFromUrl = function (url) {
+    if (!url) return null;
+    const m = url.match(/(?:shrink_|\/)(\d{2,4})_(\d{2,4})(?:\/|$)/i);
+    if (!m) return null;
+    const w = parseInt(m[1], 10);
+    const h = parseInt(m[2], 10);
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+    return { width: w, height: h };
+  };
+  const isObviousNonProfileAsset = function (url) {
+    if (!url) return true;
+    if (isDefaultAvatar(url)) return true;
+    return /profile-displaybackgroundimage|background-image|cover-photo|ghost-person|ghosts\/person|default-avatar|anon-user/i.test(url);
+  };
+  const inferOwnerMatch = function (raw, strategyName, strategySlug) {
+    if (raw && typeof raw.ownerMatch === 'string') return raw.ownerMatch;
+    const rejectReason = raw && typeof raw.rejectReason === 'string' ? raw.rejectReason : '';
+    if (/owner_mismatch|owner_proximity_reject/i.test(rejectReason)) return 'mismatch';
+    if (!strategySlug) return 'unknown';
+    if (strategyName === 'vector-image' || strategyName === 'licdn-regex') return 'probable';
+    if (strategyName === 'overlay-photo') return 'probable';
+    return 'unknown';
+  };
+  const normalizeStrategyResult = function (raw, strategyName, strategySlug, fallbackSource) {
+    if (typeof raw === 'string') {
+      return {
+        url: raw,
+        rejectReason: null,
+        source: fallbackSource,
+        ownerMatch: inferOwnerMatch({}, strategyName, strategySlug),
+        reasons: [],
+      };
+    }
     if (raw && typeof raw === 'object') {
       return {
         url: typeof raw.url === 'string' ? raw.url : null,
         rejectReason: typeof raw.rejectReason === 'string' ? raw.rejectReason : null,
+        source: typeof raw.source === 'string' && raw.source ? raw.source : fallbackSource,
+        ownerMatch: inferOwnerMatch(raw, strategyName, strategySlug),
+        reasons: Array.isArray(raw.reasons) ? raw.reasons.slice(0, 12) : [],
       };
     }
-    return { url: null, rejectReason: null };
+    return {
+      url: null,
+      rejectReason: null,
+      source: fallbackSource,
+      ownerMatch: inferOwnerMatch({}, strategyName, strategySlug),
+      reasons: [],
+    };
+  };
+  const scoreCandidate = function (candidate) {
+    const baseByStrategy = {
+      'vector-image': 65,
+      'licdn-regex': 58,
+      'overlay-photo': 52,
+      'profile-img': 44,
+      'json-ld': 40,
+      'og:image': 34,
+    };
+    let score = baseByStrategy[candidate.strategy] || 30;
+    if (candidate.isMediaLicdn) score += 12;
+    if (candidate.hasSig) score += 10;
+    if (candidate.hasExpiry) score += 8;
+    if (candidate.ownerMatch === 'exact') score += 12;
+    else if (candidate.ownerMatch === 'probable') score += 6;
+    else if (candidate.ownerMatch === 'mismatch') score -= 30;
+    if (candidate.dims && candidate.dims.width >= 300 && candidate.dims.height >= 300) score += 6;
+    if (candidate.isNonProfileAsset) score -= 45;
+    return Math.max(0, Math.min(100, score));
   };
   const chooseDominantRejectReason = function (strategyOutcomes) {
     const counts = new Map();
@@ -2111,54 +2185,121 @@ async function extractPhotoUrl(html, slug) {
   }
 
   const strategies = [
-    ['json-ld', extractFromJsonLd],
-    ['og:image', extractFromOgImage],
-    ['profile-img', extractFromProfileImg],
-    ['vector-image', extractFromVectorImage],
-    ['licdn-regex', extractFromLicdnRegex],
-    ['overlay-photo', function (_html, strategySlug) { return extractFromOverlayPhoto(strategySlug); }],
+    ['json-ld', extractFromJsonLd, 'json-ld-image'],
+    ['og:image', extractFromOgImage, 'og-image-meta'],
+    ['profile-img', extractFromProfileImg, 'profile-image-tag'],
+    ['vector-image', extractFromVectorImage, 'vector-image-object'],
+    ['licdn-regex', extractFromLicdnRegex, 'licdn-root+artifact'],
+    ['overlay-photo', function (_html, strategySlug) { return extractFromOverlayPhoto(strategySlug); }, 'overlay-photo-img'],
   ];
   const outcomes = [];
-  for (const [name, fn] of strategies) {
+  const validCandidates = [];
+  for (const [name, fn, defaultSource] of strategies) {
     const t0 = Date.now();
     try {
       // All strategy fns accept (html, slug); most ignore the slug, but
       // vector-image and licdn-regex use it to pick the target's rootUrl
       // rather than whichever one happens to appear first in the page.
-      const result = normalizeStrategyResult(await fn(html, slug));
+      const result = normalizeStrategyResult(await fn(html, slug), name, slug, defaultSource);
       const url = result.url;
       const dt = Date.now() - t0;
-      if (url && !isDefaultAvatar(url)) {
-        console.log('[reknown-ext] photo extracted via', name, 'in', dt + 'ms');
-        if (DEBUG_VERBOSE) {
-          outcomes.push({
-            strategy: name,
-            result: 'MATCH',
-            rejectReason: result.rejectReason || null,
-            urlPrefix: url.substring(0, 80),
-            len: url.length,
-            ms: dt,
-          });
-          console.log('[reknown-ext] strategy outcomes (on success):', JSON.stringify(outcomes));
-        }
-        return { url: url, rejectReason: result.rejectReason || null, dominantRejectReason: null };
-      }
-      // Record why this strategy didn't win.
       if (!url) {
-        outcomes.push({ strategy: name, result: 'null', rejectReason: result.rejectReason || null, ms: dt });
-      } else if (isDefaultAvatar(url)) {
-        outcomes.push({
-          strategy: name,
-          result: 'default-avatar',
-          rejectReason: result.rejectReason || null,
-          urlPrefix: url.substring(0, 80),
-          ms: dt,
-        });
+        outcomes.push({ strategy: name, result: 'null', source: result.source, rejectReason: result.rejectReason || null, ms: dt });
+        continue;
       }
+
+      const host = getUrlHost(url);
+      const isMediaLicdn = host === 'media.licdn.com';
+      const hasSig = hasSignatureFields(url);
+      const hasExpiry = hasExpiryField(url);
+      const dims = parseDimsFromUrl(url);
+      const isNonProfileAsset = isObviousNonProfileAsset(url);
+      const reasons = [];
+      reasons.push(isMediaLicdn ? 'pass:media.licdn host' : 'fail:non-media.licdn host');
+      reasons.push(hasSig ? 'pass:signature fields present' : 'fail:missing signature fields');
+      reasons.push(hasExpiry ? 'pass:expiry field present' : 'fail:missing expiry field');
+      reasons.push(isNonProfileAsset ? 'fail:obvious non-profile asset' : 'pass:not obvious non-profile asset');
+      if (result.rejectReason) reasons.push('strategyReject:' + result.rejectReason);
+      if (result.ownerMatch === 'mismatch') reasons.push('fail:owner mismatch');
+      if (result.ownerMatch === 'exact' || result.ownerMatch === 'probable') reasons.push('pass:owner association ' + result.ownerMatch);
+
+      const candidate = {
+        url: url,
+        strategy: name,
+        source: result.source || defaultSource,
+        ownerMatch: result.ownerMatch || 'unknown',
+        confidence: 0,
+        reasons: result.reasons.concat(reasons),
+        len: url.length,
+        dims: dims,
+        hasSig: hasSig,
+        hasExpiry: hasExpiry,
+        isMediaLicdn: isMediaLicdn,
+        isNonProfileAsset: isNonProfileAsset,
+        rejectReason: result.rejectReason || null,
+      };
+      candidate.confidence = scoreCandidate(candidate);
+
+      const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
+      outcomes.push({
+        strategy: name,
+        result: accepted ? 'candidate-accepted' : 'candidate-rejected',
+        source: candidate.source,
+        ownerMatch: candidate.ownerMatch,
+        confidence: candidate.confidence,
+        rejectReason: candidate.rejectReason,
+        len: candidate.len,
+        dims: candidate.dims ? (candidate.dims.width + 'x' + candidate.dims.height) : null,
+        hasSig: candidate.hasSig,
+        hasExpiry: candidate.hasExpiry,
+        ms: dt,
+      });
+      if (accepted) validCandidates.push(candidate);
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
       outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
     }
+  }
+  validCandidates.sort(function (a, b) { return b.confidence - a.confidence; });
+  const winner = validCandidates.length > 0 ? validCandidates[0] : null;
+  const candidateSummary = validCandidates.map(function (c) {
+    return {
+      source: c.source,
+      confidence: c.confidence,
+      ownerMatch: c.ownerMatch,
+      len: c.len,
+      dims: c.dims ? (c.dims.width + 'x' + c.dims.height) : null,
+      hasSig: c.hasSig,
+      hasExpiry: c.hasExpiry,
+    };
+  });
+  console.log(
+    '[reknown-ext] candidateSummary=' + JSON.stringify(candidateSummary),
+    'winner=' + JSON.stringify(
+      winner
+        ? {
+          source: winner.source,
+          confidence: winner.confidence,
+          ownerMatch: winner.ownerMatch,
+          len: winner.len,
+          dims: winner.dims ? (winner.dims.width + 'x' + winner.dims.height) : null,
+          hasSig: winner.hasSig,
+          hasExpiry: winner.hasExpiry,
+        }
+        : null
+    ),
+  );
+  if (winner) {
+    return {
+      url: winner.url,
+      confidence: winner.confidence,
+      ownerMatch: winner.ownerMatch,
+      source: winner.source,
+      reasons: winner.reasons,
+      rejectReason: winner.rejectReason || null,
+      dominantRejectReason: null,
+      outcomes: outcomes,
+    };
   }
   let dominantRejectReason = chooseDominantRejectReason(outcomes);
   if (!dominantRejectReason) {
