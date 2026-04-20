@@ -695,6 +695,7 @@ function extractFromVectorImage(html, slug) {
       function (c) { return typeof c.ownerAnchorOffset === 'number' ? c.ownerAnchorOffset : c.rootOffset; },
       ownerOffsets,
       'vector-image',
+      slug,
     );
     for (let ci = 0; ci < ownerSelection.scored.length; ci++) {
       ownerSelection.scored[ci].item.ownerDistance = ownerSelection.scored[ci].ownerDistance;
@@ -831,6 +832,8 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
     const artifactsMatch = objectText.match(/"artifacts"\s*:\s*\[([\s\S]*?)\]/);
     const groupMeta = getVectorGroupContext(decoded, objectRange.start, objectRange.end, slug);
     const ownerBinding = extractObjectOwnerBinding(objectText, slug);
+    const enclosingOwnerBinding = findNearestEnclosingOwnerBinding(decoded, objectRanges, rootOffset, slug);
+    const effectiveOwnerBinding = enclosingOwnerBinding || ownerBinding;
     if (!artifactsMatch) {
       const fallbackSegments = extractVectorContextFallbackSegments(
         decoded,
@@ -842,7 +845,7 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         assetId,
         slug,
         ownerOffsets,
-        ownerBinding,
+        effectiveOwnerBinding,
       );
       if (fallbackSegments.length > 0) {
         contextFallbackGroupCount++;
@@ -866,7 +869,7 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
       const hasSig = fullUrl.includes('&v=') && fullUrl.includes('&t=');
       const hasExpiry = fullUrl.includes('?e=');
       const hasResidualEntity = /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment);
-      candidates.push({
+      const candidate = {
         url: fullUrl,
         width: width,
         height: height,
@@ -875,14 +878,16 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         hasResidualEntity: hasResidualEntity,
         rootIndex: rootIndex,
         rootOffset: rootOffset,
-        ownerAnchorOffset: Math.floor((objectRange.start + objectRange.end) / 2),
+        ownerAnchorOffset: (effectiveOwnerBinding && typeof effectiveOwnerBinding.ownerAnchorOffset === 'number')
+          ? effectiveOwnerBinding.ownerAnchorOffset
+          : Math.floor((objectRange.start + objectRange.end) / 2),
         extractor: 'object',
         candidateSource: 'object',
         associationConfidence: 'strict-object',
-        associationMode: ownerBinding.associationMode,
-        ownerPublicIdentifier: ownerBinding.ownerPublicIdentifier,
-        ownerIsViewer: ownerBinding.ownerIsViewer,
-        ownerBindingReason: ownerBinding.ownerBindingReason,
+        associationMode: effectiveOwnerBinding.associationMode,
+        ownerPublicIdentifier: effectiveOwnerBinding.ownerPublicIdentifier,
+        ownerIsViewer: effectiveOwnerBinding.ownerIsViewer,
+        ownerBindingReason: effectiveOwnerBinding.ownerBindingReason,
         groupStart: objectRange.start,
         groupEnd: objectRange.end,
         groupTargetSlugNearby: groupMeta.targetSlugNearby,
@@ -891,7 +896,19 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         assetId: assetId,
         associationGroupKey: 'object:' + rootIndex + ':' + objectRange.start + '-' + objectRange.end,
         direction: 'object',
-      });
+      };
+      candidates.push(candidate);
+      if (DEBUG_VERBOSE) {
+        console.log(
+          '[reknown-ext] vector-image: owner attribution',
+          'ownerPublicIdentifier=' + (candidate.ownerPublicIdentifier || 'n/a'),
+          'targetSlug=' + (slug || 'n/a'),
+          'ownerDistance=' + (ownerOffsets.length > 0
+            ? nearestOwnerDistance(candidate.ownerAnchorOffset, ownerOffsets)
+            : 'n/a'),
+          'associationMode=' + (candidate.associationMode || 'proximity-fallback'),
+        );
+      }
       segCount++;
     }
 
@@ -906,7 +923,7 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         assetId,
         slug,
         ownerOffsets,
-        ownerBinding,
+        effectiveOwnerBinding,
       );
       if (fallbackSegments.length > 0) {
         contextFallbackGroupCount++;
@@ -924,9 +941,9 @@ function extractVectorCandidatesFromObjects(decoded, slug) {
         'segmentsFound=' + segCount,
         'fallbackAdded=' + (segCount === 0 && candidates.some(function (c) { return c.rootIndex === rootIndex && c.extractor === 'context-fallback'; })),
         'targetSlugNearby=' + groupMeta.targetSlugNearby,
-        'ownerPublicIdentifier=' + (ownerBinding.ownerPublicIdentifier || 'n/a'),
-        'associationMode=' + ownerBinding.associationMode,
-        'ownerBindingReason=' + ownerBinding.ownerBindingReason,
+        'ownerPublicIdentifier=' + (effectiveOwnerBinding.ownerPublicIdentifier || 'n/a'),
+        'associationMode=' + effectiveOwnerBinding.associationMode,
+        'ownerBindingReason=' + effectiveOwnerBinding.ownerBindingReason,
         'publicIdentifiers=' + JSON.stringify(groupMeta.publicIdentifiers),
         'miniProfileRefs=' + groupMeta.miniProfileRefs,
       );
@@ -974,7 +991,7 @@ function extractVectorCandidatesByWindow(decoded) {
       const dimMatch = segment.match(/^(\d+)_(\d+)\//);
       const width = dimMatch ? parseInt(dimMatch[1], 10) : 0;
       const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
-      candidates.push({
+      const candidate = {
         url: fullUrl,
         width: width,
         height: height,
@@ -986,7 +1003,8 @@ function extractVectorCandidatesByWindow(decoded) {
         ownerAnchorOffset: rootMatch.index,
         extractor: 'legacy-window-fallback',
         direction: windowSegments[si].direction,
-      });
+      };
+      candidates.push(candidate);
     }
   }
   if (DEBUG_VERBOSE && candidates.length > 0) {
@@ -1039,7 +1057,7 @@ function extractVectorContextFallbackSegments(
       const height = dimMatch ? parseInt(dimMatch[2], 10) : 0;
       const strongAssociation = groupMeta.targetSlugNearby || ownerDistance <= OWNER_PROXIMITY_FALLBACK_BYTES;
       if (!strongAssociation) continue;
-      candidates.push({
+      const candidate = {
         url: fullUrl,
         width: width,
         height: height,
@@ -1064,7 +1082,17 @@ function extractVectorContextFallbackSegments(
         assetId: assetId,
         associationGroupKey: 'fallback:' + rootIndex + ':' + range.start + '-' + range.end,
         direction: 'context-fallback',
-      });
+      };
+      candidates.push(candidate);
+      if (DEBUG_VERBOSE) {
+        console.log(
+          '[reknown-ext] vector-image: owner attribution',
+          'ownerPublicIdentifier=' + (candidate.ownerPublicIdentifier || 'n/a'),
+          'targetSlug=' + (slug || 'n/a'),
+          'ownerDistance=' + (ownerDistance === Infinity ? 'inf' : ownerDistance),
+          'associationMode=' + (candidate.associationMode || 'proximity-fallback'),
+        );
+      }
       segCount++;
     }
 
@@ -1130,6 +1158,36 @@ function findNarrowestContainingRange(ranges, offset) {
     }
   }
   return best;
+}
+
+function findNearestEnclosingOwnerBinding(decoded, ranges, offset, slug) {
+  const containing = [];
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (r.start <= offset && r.end >= offset) containing.push(r);
+  }
+  containing.sort(function (a, b) { return a.length - b.length; });
+
+  for (let i = 0; i < containing.length; i++) {
+    const range = containing[i];
+    const objectText = decoded.substring(range.start, range.end + 1);
+    const publicIdentifiers = collectPublicIdentifiersFromText(objectText, 8);
+    if (publicIdentifiers.length === 0) continue;
+    const binding = extractObjectOwnerBinding(objectText, slug);
+    const ownerAnchorOffset = Math.floor((range.start + range.end) / 2);
+    return {
+      ownerPublicIdentifier: binding.ownerPublicIdentifier || publicIdentifiers[0] || null,
+      associationMode: binding.ownerPublicIdentifier ? binding.associationMode : 'enclosing-publicIdentifier',
+      ownerIsViewer: binding.ownerIsViewer,
+      ownerBindingReason: binding.ownerPublicIdentifier
+        ? binding.ownerBindingReason
+        : ('nearest_enclosing_publicIdentifier:' + publicIdentifiers[0]),
+      ownerAnchorOffset: ownerAnchorOffset,
+      ownerRangeStart: range.start,
+      ownerRangeEnd: range.end,
+    };
+  }
+  return null;
 }
 
 function collectPublicIdentifiersFromText(text, maxCount) {
@@ -1516,6 +1574,7 @@ function extractFromLicdnRegex(html, slug) {
         function (c) { return c.index; },
         ownerOffsets,
         'licdn-regex',
+        slug,
       );
       allowedPhotoOffsets = new Set(photoOwnerSelection.pool.map(function (c) { return c.index; }));
     } else {
@@ -1583,6 +1642,7 @@ function extractFromLicdnRegex(html, slug) {
         function (c) { return c.index; },
         ownerOffsets,
         'licdn-regex synthesized',
+        slug,
       );
     }
     var selectedSynthesized = synthesizedOwnerSelection.pool;
@@ -1706,6 +1766,7 @@ function extractFromLicdnRegex(html, slug) {
         function (c) { return c.index; },
         ownerOffsets,
         'licdn-regex generic',
+        slug,
       );
     }
     var selectedGeneric = genericOwnerSelection.pool;
@@ -2028,14 +2089,59 @@ function nearestOwnerDistance(offset, ownerOffsets) {
 }
 
 function chooseOwnerProximityCandidates(items, getOffset, ownerOffsets, contextLabel) {
-  if (!ownerOffsets || ownerOffsets.length === 0) {
-    return { pool: [], mode: 'reject', reason: 'owner_proximity_reject_no_owner' };
+  const targetSlug = arguments.length > 4 ? arguments[4] : '';
+  const normalizedTargetSlug = targetSlug ? String(targetSlug).toLowerCase() : '';
+  const directOwnerMatches = [];
+  const explicitOwnerMismatch = [];
+  const proximityEligible = [];
+  for (let i = 0; i < items.length; i++) {
+    const ownerPid = items[i] && items[i].ownerPublicIdentifier
+      ? String(items[i].ownerPublicIdentifier).toLowerCase()
+      : '';
+    if (!normalizedTargetSlug || !ownerPid) {
+      proximityEligible.push(items[i]);
+      continue;
+    }
+    if (ownerPid === normalizedTargetSlug) {
+      directOwnerMatches.push(items[i]);
+    } else {
+      explicitOwnerMismatch.push(items[i]);
+    }
+  }
+
+  if (directOwnerMatches.length > 0) {
+    return {
+      pool: directOwnerMatches,
+      mode: 'object-owned',
+      reason: 'owner_public_identifier_match',
+      scored: directOwnerMatches.map(function (item, i) {
+        return { item: item, ownerDistance: nearestOwnerDistance(getOffset(item, i), ownerOffsets) };
+      }),
+    };
   }
 
   const scored = [];
-  for (let i = 0; i < items.length; i++) {
-    const dist = nearestOwnerDistance(getOffset(items[i], i), ownerOffsets);
-    scored.push({ item: items[i], ownerDistance: dist });
+  for (let i = 0; i < proximityEligible.length; i++) {
+    const dist = nearestOwnerDistance(getOffset(proximityEligible[i], i), ownerOffsets);
+    scored.push({ item: proximityEligible[i], ownerDistance: dist });
+  }
+  if (DEBUG_VERBOSE && scored.length > 0) {
+    console.log(
+      '[reknown-ext] ' + contextLabel + ': owner attribution',
+      'attribution=' + JSON.stringify(scored.map(function (s) {
+        return {
+          ownerPublicIdentifier: s.item.ownerPublicIdentifier || 'n/a',
+          targetSlug: targetSlug || 'n/a',
+          ownerDistance: s.ownerDistance === Infinity ? 'inf' : s.ownerDistance,
+          associationMode: s.item.associationMode || 'proximity-fallback',
+        };
+      })),
+      'explicitOwnerMismatch=' + explicitOwnerMismatch.length,
+    );
+  }
+
+  if (!ownerOffsets || ownerOffsets.length === 0) {
+    return { pool: [], mode: 'reject', reason: 'owner_proximity_reject_no_owner' };
   }
 
   const inStrictWindow = scored.filter(function (s) {
@@ -2075,7 +2181,9 @@ function chooseOwnerProximityCandidates(items, getOffset, ownerOffsets, contextL
   return {
     pool: [],
     mode: 'reject',
-    reason: 'owner_proximity_strict_reject',
+    reason: explicitOwnerMismatch.length > 0 && proximityEligible.length === 0
+      ? 'owner_public_identifier_mismatch'
+      : 'owner_proximity_strict_reject',
     scored: scored,
   };
 }
