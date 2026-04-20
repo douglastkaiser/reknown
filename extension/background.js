@@ -1390,6 +1390,47 @@ function extractFromLicdnRegex(html, slug) {
       ownerBindingReason: binding.ownerBindingReason,
     };
   });
+  const synthesizedCandidates = [];
+  for (let ri = 0; ri < objectRanges.length; ri++) {
+    const range = objectRanges[ri];
+    const objectText = decoded.substring(range.start, range.end + 1);
+    const rootMatches = [...objectText.matchAll(
+      /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_[^"]*)"/g,
+    )];
+    if (rootMatches.length === 0) continue;
+    const segMatches = [...objectText.matchAll(/"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g)];
+    if (segMatches.length === 0) continue;
+    const binding = extractObjectOwnerBinding(objectText, slug);
+    for (let rmi = 0; rmi < rootMatches.length; rmi++) {
+      const rootUrl = rootMatches[rmi][1];
+      for (let si = 0; si < segMatches.length; si++) {
+        const segment = segMatches[si][1];
+        const fullUrl = rootUrl + segment;
+        const dimMatch = segment.match(/^(\d+)_(\d+)\//);
+        const width = dimMatch ? (parseInt(dimMatch[1], 10) || 0) : 0;
+        const height = dimMatch ? (parseInt(dimMatch[2], 10) || 0) : 0;
+        const hasSig = fullUrl.includes('&v=') && fullUrl.includes('&t=');
+        const hasExpiry = fullUrl.includes('?e=');
+        let score = 0;
+        if (width > 0 && height > 0) score += Math.min(12, Math.floor((width * height) / 10000));
+        if (hasSig) score += 16;
+        if (hasExpiry) score += 8;
+        synthesizedCandidates.push({
+          url: fullUrl,
+          width: width,
+          height: height,
+          hasSig: hasSig,
+          hasExpiry: hasExpiry,
+          score: score,
+          index: range.start,
+          ownerPublicIdentifier: binding.ownerPublicIdentifier,
+          associationMode: binding.associationMode,
+          ownerIsViewer: binding.ownerIsViewer,
+          ownerBindingReason: binding.ownerBindingReason,
+        });
+      }
+    }
+  }
 
   if (DEBUG_VERBOSE) {
     // Raw occurrence counts vs regex-match count. If these diverge it means
@@ -1413,6 +1454,14 @@ function extractFromLicdnRegex(html, slug) {
           url: m[0].substring(0, 90),
         };
       })),
+    );
+    const signedSynthesizedCount = synthesizedCandidates.filter(function (c) {
+      return c.hasSig && c.hasExpiry;
+    }).length;
+    console.log(
+      '[reknown-ext] licdn-regex: synthesized candidates',
+      'synthesizedCandidateCount=' + synthesizedCandidates.length,
+      'signedSynthesizedCount=' + signedSynthesizedCount,
     );
     // For each match, log the 40 chars AFTER the match end so we can see
     // exactly what character terminated the regex body — this is the
@@ -1511,6 +1560,60 @@ function extractFromLicdnRegex(html, slug) {
     }
   }
 
+  // First pass: synthesize full URLs from rootUrl + fileIdentifyingUrlPathSegment
+  // pairs in the same JSON object. rootUrl alone is never a valid candidate.
+  var allowedSynthesizedOffsets = null;
+  if (slug) {
+    const directSynthesizedOwner = synthesizedCandidates.filter(function (c) {
+      return c.ownerPublicIdentifier && c.ownerPublicIdentifier.toLowerCase() === slug.toLowerCase();
+    });
+    const synthesizedEligible = directSynthesizedOwner.length > 0
+      ? directSynthesizedOwner
+      : synthesizedCandidates.filter(function (c) { return !c.ownerPublicIdentifier; });
+    var synthesizedOwnerSelection = null;
+    if (directSynthesizedOwner.length > 0) {
+      synthesizedOwnerSelection = {
+        pool: directSynthesizedOwner,
+        mode: 'object-owned',
+        reason: 'owner_public_identifier_match',
+      };
+    } else {
+      synthesizedOwnerSelection = chooseOwnerProximityCandidates(
+        synthesizedEligible,
+        function (c) { return c.index; },
+        ownerOffsets,
+        'licdn-regex synthesized',
+      );
+    }
+    var selectedSynthesized = synthesizedOwnerSelection.pool;
+    var nonViewerSynthesized = selectedSynthesized.filter(function (c) { return !c.ownerIsViewer; });
+    if (nonViewerSynthesized.length > 0) selectedSynthesized = nonViewerSynthesized;
+    allowedSynthesizedOffsets = new Set(selectedSynthesized.map(function (c) { return c.index; }));
+  }
+  var bestSynthesized = null;
+  var bestSynthesizedScore = -1;
+  for (var sci = 0; sci < synthesizedCandidates.length; sci++) {
+    var synthesizedCandidate = synthesizedCandidates[sci];
+    if (allowedSynthesizedOffsets && !allowedSynthesizedOffsets.has(synthesizedCandidate.index)) continue;
+    if (!synthesizedCandidate.hasSig || !synthesizedCandidate.hasExpiry) continue;
+    if (synthesizedCandidate.score > bestSynthesizedScore) {
+      bestSynthesized = synthesizedCandidate;
+      bestSynthesizedScore = synthesizedCandidate.score;
+    }
+  }
+  if (bestSynthesized) {
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] licdn-regex: selected synthesized URL',
+        'score=' + bestSynthesizedScore,
+        'selectedDimensions=' + bestSynthesized.width + 'x' + bestSynthesized.height,
+        'len=' + bestSynthesized.url.length,
+        'url=' + bestSynthesized.url.substring(0, 120),
+      );
+    }
+    return bestSynthesized.url;
+  }
+
   // Score each match. A valid signed LinkedIn photo URL is 200+ chars and
   // contains expiry/signature params (?e=…&v=…&t=…). Template URLs from
   // LinkedIn's JS bundles are ~85 chars with no query string.
@@ -1527,7 +1630,13 @@ function extractFromLicdnRegex(html, slug) {
     if (score > bestScore) { bestScore = score; bestPhoto = candidate; }
   }
 
-  if (bestPhoto && bestScore >= 20) {
+  if (
+    bestPhoto &&
+    bestScore >= 20 &&
+    bestPhoto.includes('&v=') &&
+    bestPhoto.includes('&t=') &&
+    bestPhoto.includes('?e=')
+  ) {
     if (DEBUG_VERBOSE) {
       console.log(
         '[reknown-ext] licdn-regex: selected URL score=' + bestScore,
@@ -1619,7 +1728,7 @@ function extractFromLicdnRegex(html, slug) {
     var gUrl = allGenericMatches[gi][0];
     if (/profile-displaybackgroundimage/.test(gUrl)) continue;
     if (allowedGenericOffsets && !allowedGenericOffsets.has(allGenericMatches[gi].index)) continue;
-    if (gUrl.length > 100 && gUrl.includes('&v=')) {
+    if (gUrl.length > 100 && gUrl.includes('&v=') && gUrl.includes('&t=') && gUrl.includes('?e=')) {
       if (DEBUG_VERBOSE) {
         console.log(
           '[reknown-ext] licdn-regex generic fallback: selected len=' + gUrl.length,
