@@ -524,9 +524,33 @@ function extractFromVectorImage(html, slug) {
     );
   }
 
+  const ownerObjectExtraction = extractVectorCandidatesFromTargetOwnerObjects(decoded, slug);
   const objectExtraction = extractVectorCandidatesFromObjects(decoded, slug);
   let candidates = objectExtraction.candidates;
   let winningExtractor = 'object';
+
+  if (ownerObjectExtraction.candidates.length > 0) {
+    candidates = ownerObjectExtraction.candidates;
+    winningExtractor = 'owner-object';
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] vector-image: preferring direct owner-object candidates',
+        'slug=' + slug,
+        'ownerObjectCandidates=' + ownerObjectExtraction.candidates.length,
+        'ownerOffsets=' + ownerObjectExtraction.ownerOffsets.length,
+        'ownerRangesExamined=' + ownerObjectExtraction.ownerRangesExamined,
+        'objectCandidates=' + objectExtraction.candidates.length,
+      );
+    }
+  } else if (DEBUG_VERBOSE && slug) {
+    console.warn(
+      '[reknown-ext] vector-image: owner-object candidates not found, falling back to root/object proximity logic',
+      'slug=' + slug,
+      'ownerOffsets=' + ownerObjectExtraction.ownerOffsets.length,
+      'ownerRangesExamined=' + ownerObjectExtraction.ownerRangesExamined,
+      'objectCandidates=' + objectExtraction.candidates.length,
+    );
+  }
 
   // Keep the old window-based matcher as an opt-in debug fallback only.
   // This allows temporary side-by-side troubleshooting without depending on
@@ -1042,6 +1066,117 @@ function getVectorGroupContext(decoded, groupStart, groupEnd, slug) {
     publicIdentifiers: publicIdentifiers,
     miniProfileRefs: countOccurrences(context, 'MiniProfile') + countOccurrences(context, 'miniProfile'),
     targetSlugNearby: slugPattern ? slugPattern.test(context) : false,
+  };
+}
+
+function collectOwnerObjectRanges(decoded, objectRanges, slug) {
+  const ownerOffsets = slug ? findOwnerOffsets(decoded, slug) : [];
+  const seen = new Set();
+  const ownerRanges = [];
+  for (let i = 0; i < ownerOffsets.length; i++) {
+    const ownerOffset = ownerOffsets[i];
+    const containing = [];
+    for (let ri = 0; ri < objectRanges.length; ri++) {
+      const range = objectRanges[ri];
+      if (range.start <= ownerOffset && range.end >= ownerOffset) {
+        containing.push(range);
+      }
+    }
+    containing.sort(function (a, b) { return a.length - b.length; });
+    for (let ci = 0; ci < containing.length; ci++) {
+      const range = containing[ci];
+      const key = range.start + ':' + range.end;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ownerRanges.push(range);
+    }
+  }
+  return {
+    ownerOffsets: ownerOffsets,
+    ownerRanges: ownerRanges,
+  };
+}
+
+function extractVectorCandidatesFromTargetOwnerObjects(decoded, slug) {
+  if (!slug) {
+    return { candidates: [], ownerOffsets: [], ownerRangesExamined: 0 };
+  }
+  const objectRanges = buildJsonObjectRanges(decoded);
+  const ownerMeta = collectOwnerObjectRanges(decoded, objectRanges, slug);
+  const ownerOffsets = ownerMeta.ownerOffsets;
+  const ownerRanges = ownerMeta.ownerRanges;
+  const candidates = [];
+  let rangesWithRoot = 0;
+  let rangesWithArtifacts = 0;
+
+  for (let i = 0; i < ownerRanges.length; i++) {
+    const range = ownerRanges[i];
+    if (range.length > 200000) continue;
+    const objectText = decoded.substring(range.start, range.end + 1);
+    if (!new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(slug) + '"', 'i').test(objectText)) continue;
+
+    const rootRe = /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_)"/g;
+    const rootMatches = [...objectText.matchAll(rootRe)];
+    if (rootMatches.length === 0) continue;
+    rangesWithRoot++;
+
+    const segRe = /"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g;
+    const segMatches = [...objectText.matchAll(segRe)];
+    if (segMatches.length === 0) continue;
+    rangesWithArtifacts++;
+
+    for (let rmi = 0; rmi < rootMatches.length; rmi++) {
+      const rootUrl = rootMatches[rmi][1];
+      for (let si = 0; si < segMatches.length; si++) {
+        const segment = segMatches[si][1];
+        const dimMatch = segment.match(/^(\d+)_(\d+)\//);
+        if (!dimMatch) continue;
+        const width = parseInt(dimMatch[1], 10) || 0;
+        const height = parseInt(dimMatch[2], 10) || 0;
+        const fullUrl = rootUrl + segment;
+        if (!fullUrl.includes('?e=') || !fullUrl.includes('&v=') || !fullUrl.includes('&t=')) continue;
+        candidates.push({
+          url: fullUrl,
+          width: width,
+          height: height,
+          hasSig: true,
+          hasExpiry: true,
+          hasResidualEntity: /&#\d+;|&#x[0-9a-fA-F]+;|\\u00[0-9a-fA-F]{2}/.test(segment),
+          rootIndex: -1,
+          rootOffset: range.start,
+          ownerAnchorOffset: Math.floor((range.start + range.end) / 2),
+          extractor: 'owner-object',
+          candidateSource: 'owner-object',
+          associationConfidence: 'direct-owner-object',
+          groupStart: range.start,
+          groupEnd: range.end,
+          groupTargetSlugNearby: true,
+          nearbyPublicIdentifiers: [slug],
+          nearbyMiniProfileRefs: countOccurrences(objectText, 'MiniProfile') + countOccurrences(objectText, 'miniProfile'),
+          assetId: extractDigitalMediaAssetId(rootUrl),
+          associationGroupKey: 'owner-object:' + range.start + '-' + range.end,
+          direction: 'owner-object',
+        });
+      }
+    }
+  }
+
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] vector-image: owner-object probe',
+      'slug=' + slug,
+      'ownerOffsets=' + ownerOffsets.length,
+      'ownerRanges=' + ownerRanges.length,
+      'rangesWithRoot=' + rangesWithRoot,
+      'rangesWithArtifacts=' + rangesWithArtifacts,
+      'candidates=' + candidates.length,
+    );
+  }
+
+  return {
+    candidates: candidates,
+    ownerOffsets: ownerOffsets,
+    ownerRangesExamined: ownerRanges.length,
   };
 }
 
