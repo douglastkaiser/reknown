@@ -1392,6 +1392,115 @@ function extractFromLicdnRegex(html, slug) {
   return null;
 }
 
+async function extractFromOverlayPhoto(slug) {
+  if (!slug) {
+    if (DEBUG_VERBOSE) {
+      console.log('[reknown-ext] overlay-photo: reject reason', 'missing_slug');
+    }
+    return { url: null, rejectReason: 'missing_slug' };
+  }
+  const overlayUrl = 'https://www.linkedin.com/in/' + encodeURIComponent(slug) + '/overlay/photo/';
+  let response;
+  const fetchStart = Date.now();
+  try {
+    response = await fetch(overlayUrl, {
+      credentials: 'include',
+      redirect: 'follow',
+      referrer: 'https://www.linkedin.com/',
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    });
+  } catch (err) {
+    if (DEBUG_VERBOSE) {
+      console.warn('[reknown-ext] overlay-photo: reject reason', 'fetch_failed', String(err));
+    }
+    return { url: null, rejectReason: 'overlay_fetch_failed' };
+  }
+  let overlayHtml = '';
+  try {
+    overlayHtml = await response.text();
+  } catch (err) {
+    if (DEBUG_VERBOSE) {
+      console.warn('[reknown-ext] overlay-photo: reject reason', 'overlay_read_failed', String(err));
+    }
+    return { url: null, rejectReason: 'overlay_read_failed' };
+  }
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] overlay-photo: fetched',
+      'slug=' + slug,
+      'status=' + response.status,
+      'ok=' + response.ok,
+      'redirected=' + response.redirected,
+      'fetchMs=' + (Date.now() - fetchStart),
+      'htmlLen=' + overlayHtml.length,
+      'finalUrl=' + (response.url || '').substring(0, 140),
+    );
+  }
+  const decoded = normalizeLinkedInHtml(overlayHtml, 'overlay-photo');
+  const candidates = [];
+  const seen = new Set();
+  const pushCandidate = function (candidateUrl, source) {
+    if (!candidateUrl || typeof candidateUrl !== 'string') return;
+    const clean = candidateUrl.trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    candidates.push({ url: clean, source: source });
+  };
+  try {
+    const doc = new DOMParser().parseFromString(decoded, 'text/html');
+    const modalNodes = doc.querySelectorAll(
+      'img.pv-member-photo-modal__content-image, .pv-member-photo-modal__content-image img, img[class*="pv-member-photo-modal__content-image"]',
+    );
+    for (let i = 0; i < modalNodes.length; i++) {
+      const node = modalNodes[i];
+      pushCandidate(node.getAttribute('src'), 'modal-selector:src');
+      pushCandidate(node.getAttribute('data-delayed-url'), 'modal-selector:data-delayed-url');
+      pushCandidate(node.getAttribute('data-ghost-url'), 'modal-selector:data-ghost-url');
+    }
+  } catch (err) {
+    if (DEBUG_VERBOSE) {
+      console.warn('[reknown-ext] overlay-photo: selector parse failed', String(err));
+    }
+  }
+  const regex = /https:\/\/media\.licdn\.com\/dms\/image\/[^"'\\\s<>]*profile-displayphoto[^"'\\\s<>]*/g;
+  const regexMatches = decoded.match(regex) || [];
+  for (let i = 0; i < regexMatches.length; i++) {
+    pushCandidate(regexMatches[i], 'fallback-regex');
+  }
+  if (candidates.length === 0) {
+    if (DEBUG_VERBOSE) {
+      console.log('[reknown-ext] overlay-photo: reject reason', 'overlay_no_displayphoto_artifacts');
+    }
+    return { url: null, rejectReason: 'overlay_no_displayphoto_artifacts' };
+  }
+  const signed = candidates.filter(function (entry) {
+    return entry.url.includes('?e=') && entry.url.includes('&v=') && entry.url.includes('&t=');
+  });
+  if (signed.length === 0) {
+    if (DEBUG_VERBOSE) {
+      console.log(
+        '[reknown-ext] overlay-photo: reject reason',
+        'overlay_unsigned_candidates',
+        'candidateCount=' + candidates.length,
+      );
+    }
+    return { url: null, rejectReason: 'overlay_unsigned_candidates' };
+  }
+  signed.sort(function (a, b) { return b.url.length - a.url.length; });
+  const selected = signed[0];
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] overlay-photo: selected',
+      'source=' + selected.source,
+      'candidateCount=' + candidates.length,
+      'signedCount=' + signed.length,
+      'urlLen=' + selected.url.length,
+      'url=' + selected.url.substring(0, 140),
+    );
+  }
+  return { url: selected.url, rejectReason: null };
+}
+
 // LinkedIn embeds JSON inside HTML <code>/<script> blocks using a mix of
 // named entities (&amp;, &quot;, &#39;, &lt;, &gt;), decimal numeric entities
 // (&#61; = '='), and hex numeric entities (&#x3D; = '='). The signed photo
@@ -1582,7 +1691,7 @@ function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug) {
   };
 }
 
-function extractPhotoUrl(html, slug) {
+async function extractPhotoUrl(html, slug) {
   const makeFailure = function (reason, extra) {
     return Object.assign({ url: null, rejectReason: reason || null }, extra || {});
   };
@@ -1648,6 +1757,7 @@ function extractPhotoUrl(html, slug) {
     ['profile-img', extractFromProfileImg],
     ['vector-image', extractFromVectorImage],
     ['licdn-regex', extractFromLicdnRegex],
+    ['overlay-photo', function (_html, strategySlug) { return extractFromOverlayPhoto(strategySlug); }],
   ];
   const outcomes = [];
   for (const [name, fn] of strategies) {
@@ -1656,7 +1766,7 @@ function extractPhotoUrl(html, slug) {
       // All strategy fns accept (html, slug); most ignore the slug, but
       // vector-image and licdn-regex use it to pick the target's rootUrl
       // rather than whichever one happens to appear first in the page.
-      const result = normalizeStrategyResult(fn(html, slug));
+      const result = normalizeStrategyResult(await fn(html, slug));
       const url = result.url;
       const dt = Date.now() - t0;
       if (url && !isDefaultAvatar(url)) {
@@ -1888,7 +1998,7 @@ async function enrichOne(person) {
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     return { status: 'error', error: 'login_wall', fatal: true };
   }
-  const extraction = extractPhotoUrl(html, slug);
+  const extraction = await extractPhotoUrl(html, slug);
   const photoUrl =
     typeof extraction === 'string'
       ? extraction
