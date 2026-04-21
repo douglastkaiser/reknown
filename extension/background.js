@@ -6,6 +6,7 @@ const browserApi = globalThis.browser || globalThis.chrome;
 // Single source of truth for the extension version: the manifest.
 const EXT_VERSION = browserApi.runtime.getManifest().version;
 const THROTTLE_STORAGE_KEY = 'reknownEnrichThrottleProfile';
+const DEBUG_CONFIG_STORAGE_KEY = 'reknownEnrichDebugConfig';
 const THROTTLE_PROFILES = {
   normal: {
     perRequestMinMs: 2000,
@@ -81,7 +82,14 @@ browserApi.runtime.onConnect.addListener((port) => {
 const LINKEDIN_PROFILE_RE = /^https:\/\/(www\.)?linkedin\.com\/in\/[^\s?#]+/i;
 const DEFAULT_AVATAR_MARKERS = ['ghost-person', 'ghosts/person', 'default-avatar', 'anon-user'];
 const MAX_PHOTO_DIM = 400;
-const DEBUG_VERBOSE = true;
+const DEFAULT_DEBUG_CONFIG = {
+  debugSlug: '',
+  debugRequestId: '',
+  debugVerbose: false,
+};
+let activeDebugConfig = Object.assign({}, DEFAULT_DEBUG_CONFIG);
+let debugConfigReadyPromise = null;
+let DEBUG_VERBOSE = false;
 const DEBUG_ENABLE_LEGACY_VECTOR_WINDOW_FALLBACK = false;
 
 function debugEvent(stage, payload) {
@@ -107,6 +115,97 @@ const activeBatches = new Map(); // requestId -> { cancelled: boolean }
 let rateLimitCooldownUntil = 0;
 let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
 let throttleConfigReadyPromise = null;
+
+function normalizeDebugConfig(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    debugSlug: typeof source.debugSlug === 'string' ? source.debugSlug.trim().toLowerCase() : '',
+    debugRequestId: typeof source.debugRequestId === 'string' ? source.debugRequestId.trim() : '',
+    debugVerbose: source.debugVerbose === true,
+  };
+}
+
+function shouldEnableDeepLogs(context) {
+  if (!activeDebugConfig.debugVerbose) return false;
+  const ctx = context && typeof context === 'object' ? context : {};
+  const ctxRequestId = ctx.requestId == null ? '' : String(ctx.requestId).trim();
+  const ctxSlug = ctx.slug == null ? '' : String(ctx.slug).trim().toLowerCase();
+  if (activeDebugConfig.debugRequestId && activeDebugConfig.debugRequestId !== ctxRequestId) return false;
+  if (activeDebugConfig.debugSlug && activeDebugConfig.debugSlug !== ctxSlug) return false;
+  return true;
+}
+
+function applyDebugContext(context) {
+  DEBUG_VERBOSE = shouldEnableDeepLogs(context);
+  return DEBUG_VERBOSE;
+}
+
+function loadStoredDebugConfig() {
+  return new Promise((resolve) => {
+    try {
+      browserApi.storage.local.get([DEBUG_CONFIG_STORAGE_KEY], (items) => {
+        const lastErr = browserApi.runtime.lastError;
+        if (lastErr) {
+          console.warn('[reknown-ext] debug config storage get failed', lastErr.message);
+          resolve(Object.assign({}, DEFAULT_DEBUG_CONFIG));
+          return;
+        }
+        resolve(normalizeDebugConfig(items ? items[DEBUG_CONFIG_STORAGE_KEY] : null));
+      });
+    } catch (err) {
+      console.warn('[reknown-ext] debug config storage get threw', String(err));
+      resolve(Object.assign({}, DEFAULT_DEBUG_CONFIG));
+    }
+  });
+}
+
+function persistDebugConfig(config) {
+  return new Promise((resolve) => {
+    try {
+      const payload = {};
+      payload[DEBUG_CONFIG_STORAGE_KEY] = normalizeDebugConfig(config);
+      browserApi.storage.local.set(payload, () => {
+        const lastErr = browserApi.runtime.lastError;
+        if (lastErr) {
+          console.warn('[reknown-ext] debug config storage set failed', lastErr.message);
+          resolve(false);
+          return;
+        }
+        resolve(true);
+      });
+    } catch (err) {
+      console.warn('[reknown-ext] debug config storage set threw', String(err));
+      resolve(false);
+    }
+  });
+}
+
+async function setDebugConfig(nextConfig, options) {
+  const normalized = normalizeDebugConfig(nextConfig);
+  activeDebugConfig = normalized;
+  const persist = !options || options.persist !== false;
+  const persisted = persist ? await persistDebugConfig(normalized) : false;
+  applyDebugContext(null);
+  console.log(
+    '[reknown-ext] debug config applied',
+    'persist=' + persist,
+    'persisted=' + persisted,
+    'debugVerbose=' + normalized.debugVerbose,
+    'debugRequestId=' + (normalized.debugRequestId || ''),
+    'debugSlug=' + (normalized.debugSlug || ''),
+  );
+  return { config: Object.assign({}, normalized), persisted };
+}
+
+async function ensureDebugConfigReady() {
+  if (!debugConfigReadyPromise) {
+    debugConfigReadyPromise = (async () => {
+      const stored = await loadStoredDebugConfig();
+      return setDebugConfig(stored, { persist: false });
+    })();
+  }
+  return debugConfigReadyPromise;
+}
 
 function getThrottleProfileConfig(profileName) {
   const requested = String(profileName || '');
@@ -213,6 +312,10 @@ ensureThrottleConfigReady()
   .catch((err) => {
     console.warn('[reknown-ext] throttle startup init failed', String(err));
   });
+
+ensureDebugConfigReady().catch((err) => {
+  console.warn('[reknown-ext] debug config startup init failed', String(err));
+});
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2625,22 +2728,24 @@ async function extractPhotoUrl(html, slug, eventContext) {
       hasExpiry: c.hasExpiry,
     };
   });
-  console.log(
-    '[reknown-ext] candidateSummary=' + JSON.stringify(candidateSummary),
-    'winner=' + JSON.stringify(
-      winner
-        ? {
-          source: winner.source,
-          confidence: winner.confidence,
-          ownerMatch: winner.ownerMatch,
-          len: winner.len,
-          dims: winner.dims ? (winner.dims.width + 'x' + winner.dims.height) : null,
-          hasSig: winner.hasSig,
-          hasExpiry: winner.hasExpiry,
-        }
-        : null
-    ),
-  );
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] candidateSummary=' + JSON.stringify(candidateSummary),
+      'winner=' + JSON.stringify(
+        winner
+          ? {
+            source: winner.source,
+            confidence: winner.confidence,
+            ownerMatch: winner.ownerMatch,
+            len: winner.len,
+            dims: winner.dims ? (winner.dims.width + 'x' + winner.dims.height) : null,
+            hasSig: winner.hasSig,
+            hasExpiry: winner.hasExpiry,
+          }
+          : null
+      ),
+    );
+  }
   debugEvent('candidate.rank', {
     requestId: eventContext && eventContext.requestId,
     personId: eventContext && eventContext.personId,
@@ -2830,6 +2935,8 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
 }
 
 async function enrichOne(person, context) {
+  const requestIdForDebug = context && context.requestId ? String(context.requestId) : '';
+  applyDebugContext({ requestId: requestIdForDebug, slug: null });
   const rawUrl = person && person.linkedinUrl;
   const url = String(rawUrl || '').trim();
   if (DEBUG_VERBOSE) {
@@ -2854,10 +2961,11 @@ async function enrichOne(person, context) {
   const slugMatch = url.match(/\/in\/([^\s/?#]+)/i);
   const slug = slugMatch ? decodeURIComponent(slugMatch[1]) : '';
   const eventBase = {
-    requestId: context && context.requestId ? String(context.requestId) : null,
+    requestId: requestIdForDebug || null,
     personId: person && person.id ? String(person.id) : null,
     slug: slug || null,
   };
+  applyDebugContext({ requestId: eventBase.requestId, slug: slug || null });
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] enrichOne slug extracted',
@@ -3115,6 +3223,8 @@ async function enrichOne(person, context) {
 
 async function runBatch(requestId, people, tabId) {
   await ensureThrottleConfigReady();
+  await ensureDebugConfigReady();
+  applyDebugContext({ requestId: requestId, slug: null });
   const throttleCfg = getActiveThrottleConfig();
   const batch = { cancelled: false };
   activeBatches.set(requestId, batch);
@@ -3124,7 +3234,8 @@ async function runBatch(requestId, people, tabId) {
     'count=' + people.length,
     'tabId=' + tabId,
     'ext=' + EXT_VERSION,
-    'DEBUG_VERBOSE=' + DEBUG_VERBOSE,
+    'deepLogs=' + DEBUG_VERBOSE,
+    'debugConfig=' + JSON.stringify(activeDebugConfig),
     'profile=' + throttleCfg.profile,
     'throttle=' + JSON.stringify(throttleCfg),
   );
@@ -3300,6 +3411,40 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })
       .catch((err) => {
         sendResponse({ ok: false, error: 'profile_init_failed', detail: String(err) });
+      });
+    return true;
+  }
+  if (msg.type === 'REKNOWN_ENRICH_GET_DEBUG') {
+    ensureDebugConfigReady()
+      .then(() => {
+        sendResponse({ ok: true, config: Object.assign({}, activeDebugConfig) });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, error: 'debug_config_init_failed', detail: String(err) });
+      });
+    return true;
+  }
+  if (msg.type === 'REKNOWN_ENRICH_SET_DEBUG') {
+    if (activeBatches.size > 0) {
+      const activeRequestIds = Array.from(activeBatches.keys());
+      sendResponse({
+        ok: false,
+        error: 'batch_active',
+        activeRequestIds,
+      });
+      return;
+    }
+    ensureDebugConfigReady()
+      .then(() => setDebugConfig(msg.config || {}, { persist: true }))
+      .then((result) => {
+        sendResponse({
+          ok: true,
+          config: result.config,
+          persisted: result.persisted,
+        });
+      })
+      .catch((err) => {
+        sendResponse({ ok: false, error: 'debug_config_set_failed', detail: String(err) });
       });
     return true;
   }
