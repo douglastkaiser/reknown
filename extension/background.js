@@ -334,6 +334,104 @@ ensureDebugConfigReady().catch((err) => {
   console.warn('[reknown-ext] debug config startup init failed', String(err));
 });
 
+let startupHealthProbePromise = null;
+
+function getBrowserInfoString() {
+  if (typeof navigator === 'undefined') return 'unknown';
+  const ua = typeof navigator.userAgent === 'string' ? navigator.userAgent : '';
+  if (!ua) return 'unknown';
+  if (/firefox\/[\d.]+/i.test(ua)) {
+    const match = ua.match(/firefox\/[\d.]+/i);
+    return match ? match[0] : 'firefox';
+  }
+  if (/edg\/[\d.]+/i.test(ua)) {
+    const match = ua.match(/edg\/[\d.]+/i);
+    return match ? match[0] : 'edge';
+  }
+  if (/chrome\/[\d.]+/i.test(ua)) {
+    const match = ua.match(/chrome\/[\d.]+/i);
+    return match ? match[0] : 'chrome';
+  }
+  if (/safari\/[\d.]+/i.test(ua)) {
+    const match = ua.match(/version\/[\d.]+/i);
+    return match ? match[0] : 'safari';
+  }
+  return ua.substring(0, 80);
+}
+
+function ensureStartupHealthProbe() {
+  if (startupHealthProbePromise) return startupHealthProbePromise;
+  startupHealthProbePromise = (async () => {
+    if (typeof navigator !== 'undefined' && /vitest/i.test(String(navigator.userAgent || ''))) {
+      console.log('[reknown-ext] startup.health_probe skipped test_runtime');
+      return;
+    }
+    const probeUrl = 'https://www.linkedin.com/';
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(probeUrl, { credentials: 'include', redirect: 'follow' });
+      console.log(
+        '[reknown-ext] startup.health_probe pass',
+        'url=' + probeUrl,
+        'status=' + response.status,
+        'ok=' + response.ok,
+        'durationMs=' + (Date.now() - startedAt),
+      );
+    } catch (err) {
+      const errorCode = err && typeof err.code === 'string' ? err.code : 'unknown_error';
+      console.warn(
+        '[reknown-ext] startup.health_probe fail',
+        'url=' + probeUrl,
+        'errorCode=' + errorCode,
+        'error=' + String(err),
+        'durationMs=' + (Date.now() - startedAt),
+      );
+    }
+  })();
+  return startupHealthProbePromise;
+}
+
+function getPercentile(values, percentile) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const pct = Math.max(0, Math.min(100, Number(percentile) || 0));
+  const sorted = values
+    .filter((v) => Number.isFinite(v))
+    .slice()
+    .sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const rank = Math.ceil((pct / 100) * sorted.length) - 1;
+  const idx = Math.max(0, Math.min(sorted.length - 1, rank));
+  return Math.round(sorted[idx]);
+}
+
+function emitBatchSummaryLog(args) {
+  const data = args && typeof args === 'object' ? args : {};
+  const failuresByCode =
+    data.failuresByCode && typeof data.failuresByCode === 'object' ? data.failuresByCode : {};
+  const fetchDurationsMs = Array.isArray(data.fetchDurationsMs) ? data.fetchDurationsMs : [];
+  const payload = {
+    requestId: data.requestId || null,
+    phase: data.phase || 'progress',
+    processed: Number(data.processed) || 0,
+    total: Number(data.total) || 0,
+    success: Number(data.success) || 0,
+    failed: Number(data.failed) || 0,
+    failuresByCode: failuresByCode,
+    fetchTimingMs: {
+      p50: getPercentile(fetchDurationsMs, 50),
+      p95: getPercentile(fetchDurationsMs, 95),
+    },
+    firstFailureTimestamp: data.firstFailureTimestamp || null,
+    extensionVersion: EXT_VERSION,
+    browser: getBrowserInfoString(),
+  };
+  console.log('[reknown-ext] batch.summary.stats ' + JSON.stringify(payload));
+}
+
+ensureStartupHealthProbe().catch((err) => {
+  console.warn('[reknown-ext] startup health probe init failed', String(err));
+});
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -3369,6 +3467,7 @@ async function enrichOne(person, context) {
   const requestScopedControllers = new Map();
   const profileFetchTimeoutMs = 15000;
   const photoFetchTimeoutMs = 20000;
+  let fetchProfileDurationMs = null;
   const mutableState =
     context && context.mutableState && typeof context.mutableState === 'object'
       ? context.mutableState
@@ -3411,6 +3510,13 @@ async function enrichOne(person, context) {
     mutableState.previousPersonId = eventBase.personId;
   }
   function finalizeResult(resultObj) {
+    if (
+      resultObj &&
+      typeof resultObj === 'object' &&
+      !Object.prototype.hasOwnProperty.call(resultObj, 'fetchProfileDurationMs')
+    ) {
+      resultObj.fetchProfileDurationMs = fetchProfileDurationMs;
+    }
     if (!mutableState) return resultObj;
     const isNewResultObject = mutableState.lastResultObject !== resultObj;
     const resultPhotoBufferRef = resultObj && typeof resultObj === 'object' ? resultObj.photoDataUrl : null;
@@ -3510,6 +3616,7 @@ async function enrichOne(person, context) {
       );
     });
   } catch (err) {
+    fetchProfileDurationMs = Date.now() - fetchStart;
     const fetchErrorCode =
       err && typeof err === 'object' && typeof err.errorCode === 'string'
         ? err.errorCode
@@ -3530,14 +3637,16 @@ async function enrichOne(person, context) {
     logStageBoundary(stageContext, 'fetch.completed', fetchStart);
     return finalizeResult({
       status: 'error',
+      fetchProfileDurationMs: fetchProfileDurationMs,
       error: isFetchCancelledError(err)
         ? rejectReason
         : {
             code: fetchErrorCode,
             reason: rejectReason,
-          },
+      },
     });
   }
+  fetchProfileDurationMs = Date.now() - fetchStart;
   debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: pageRes.ok ? 'ok' : 'http_error', rejectReason: null }));
   logStageBoundary(stageContext, 'fetch.completed', fetchStart);
   if (DEBUG_VERBOSE) {
@@ -3562,11 +3671,17 @@ async function enrichOne(person, context) {
     );
   }
   if (isRateLimited(pageRes)) {
-    return finalizeResult({ status: 'error', error: 'rate_limited', fatal: true });
+    return finalizeResult({
+      status: 'error',
+      error: 'rate_limited',
+      fatal: true,
+      fetchProfileDurationMs: fetchProfileDurationMs,
+    });
   }
   if (isLoginWall(pageRes)) {
     return finalizeResult({
       status: 'error',
+      fetchProfileDurationMs: fetchProfileDurationMs,
       error: { code: 'challenge_page_detected', reason: 'login_wall' },
       fatal: true,
     });
@@ -3574,12 +3689,14 @@ async function enrichOne(person, context) {
   if (pageRes.status >= 500) {
     return finalizeResult({
       status: 'error',
+      fetchProfileDurationMs: fetchProfileDurationMs,
       error: { code: 'http_5xx', reason: 'status_' + pageRes.status },
     });
   }
   if (pageRes.status >= 400) {
     return finalizeResult({
       status: 'error',
+      fetchProfileDurationMs: fetchProfileDurationMs,
       error: { code: 'http_4xx', reason: 'status_' + pageRes.status },
     });
   }
@@ -4078,6 +4195,7 @@ async function enrichOne(person, context) {
 }
 
 async function runBatch(requestId, people, tabId) {
+  ensureStartupHealthProbe();
   await ensureThrottleConfigReady();
   await ensureDebugConfigReady();
   applyDebugContext({ requestId: requestId, slug: null });
@@ -4126,6 +4244,9 @@ async function runBatch(requestId, people, tabId) {
   }
   let success = 0;
   let failed = 0;
+  const failuresByCode = {};
+  const fetchDurationsMs = [];
+  let firstFailureTimestamp = null;
   try {
     for (let i = 0; i < people.length; i++) {
       if (batch.cancelled) {
@@ -4220,6 +4341,9 @@ async function runBatch(requestId, people, tabId) {
         'cancelledDuring=' + batch.cancelled,
       );
       if (batch.cancelled) break;
+      if (result && Number.isFinite(result.fetchProfileDurationMs)) {
+        fetchDurationsMs.push(result.fetchProfileDurationMs);
+      }
       if (result.status === 'success') {
         success++;
         const successDataUrlLen =
@@ -4257,6 +4381,8 @@ async function runBatch(requestId, people, tabId) {
           result && result.error && typeof result.error === 'object' && typeof result.error.code === 'string'
             ? result.error.code
             : (typeof result.error === 'string' ? result.error : 'unknown_error');
+        failuresByCode[progressErrorCode] = (failuresByCode[progressErrorCode] || 0) + 1;
+        if (!firstFailureTimestamp) firstFailureTimestamp = new Date().toISOString();
         const errorSelectedUrlFingerprint =
           enrichMutableState.selectedCandidate &&
           typeof enrichMutableState.selectedCandidate === 'object' &&
@@ -4308,8 +4434,32 @@ async function runBatch(requestId, people, tabId) {
             status: 'aborted',
             lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
           });
+          emitBatchSummaryLog({
+            requestId: requestId,
+            phase: 'fatal_abort',
+            processed: i + 1,
+            total: people.length,
+            success: success,
+            failed: failed,
+            failuresByCode: failuresByCode,
+            fetchDurationsMs: fetchDurationsMs,
+            firstFailureTimestamp: firstFailureTimestamp,
+          });
           return;
         }
+      }
+      if ((i + 1) % throttleCfg.batchSize === 0 || i === people.length - 1) {
+        emitBatchSummaryLog({
+          requestId: requestId,
+          phase: i === people.length - 1 ? 'batch_end' : 'interval',
+          processed: i + 1,
+          total: people.length,
+          success: success,
+          failed: failed,
+          failuresByCode: failuresByCode,
+          fetchDurationsMs: fetchDurationsMs,
+          firstFailureTimestamp: firstFailureTimestamp,
+        });
       }
       // Throttle before next request (skip after last).
       if (i < people.length - 1) {
@@ -4360,6 +4510,17 @@ async function runBatch(requestId, people, tabId) {
       requestId: requestId,
       status: batch.cancelled ? 'cancelled' : 'complete',
       lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
+    });
+    emitBatchSummaryLog({
+      requestId: requestId,
+      phase: batch.cancelled ? 'cancelled' : 'complete',
+      processed: success + failed,
+      total: people.length,
+      success: success,
+      failed: failed,
+      failuresByCode: failuresByCode,
+      fetchDurationsMs: fetchDurationsMs,
+      firstFailureTimestamp: firstFailureTimestamp,
     });
   } finally {
     activeBatches.delete(requestId);
