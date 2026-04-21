@@ -254,6 +254,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
           '[reknown] ENRICH_COMPLETE aborted=' + !!data.aborted,
           'reason=' + (data.reason || ''),
           'summary=' + JSON.stringify(data.summary || {}),
+          'activeRequestId=' + (requestIdRef.current || ''),
         );
         setIsRunning(false);
         setCompleted(true);
@@ -317,6 +318,12 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
 
   const cancelEnrichment = useCallback(() => {
     if (!requestIdRef.current) return;
+    console.warn(
+      '[reknown] cancelEnrichment requested requestId=' + requestIdRef.current,
+      'origin=' + window.location.origin,
+      'href=' + window.location.href,
+    );
+    console.trace('[reknown] cancelEnrichment callsite');
     window.postMessage(
       { type: 'REKNOWN_ENRICH_CANCEL', requestId: requestIdRef.current },
       window.location.origin,
