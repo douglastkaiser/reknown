@@ -3373,7 +3373,15 @@ async function enrichOne(person, context) {
     context && context.mutableState && typeof context.mutableState === 'object'
       ? context.mutableState
       : null;
+  let selectedCandidateSourceInput = null;
   if (mutableState) {
+    selectedCandidateSourceInput =
+      mutableState.selectedCandidate &&
+      typeof mutableState.selectedCandidate === 'object' &&
+      typeof mutableState.selectedCandidate.source === 'string' &&
+      mutableState.selectedCandidate.source
+        ? mutableState.selectedCandidate.source
+        : null;
     if (
       mutableState.previousPersonId &&
       mutableState.previousPersonId !== eventBase.personId &&
@@ -3455,6 +3463,25 @@ async function enrichOne(person, context) {
       });
   }
   applyDebugContext({ requestId: eventBase.requestId, slug: slug || null });
+  const personFieldPresence = {
+    hasPersonObject: !!(person && typeof person === 'object'),
+    hasId: !!(person && person.id),
+    hasName: !!(person && person.name),
+    hasLinkedinUrl: !!url,
+  };
+  console.log(
+    '[reknown-ext] enrichOne input snapshot',
+    JSON.stringify({
+      hasUrlOrCandidate: !!(url || selectedCandidateSourceInput),
+      hasUrl: !!url,
+      hasSelectedCandidate: !!selectedCandidateSourceInput,
+      normalizedSlug: slug || null,
+      selectedCandidateSource: selectedCandidateSourceInput,
+      personFields: personFieldPresence,
+      hasPhotoUrl: !!(person && typeof person.photoUrl === 'string' && person.photoUrl.trim()),
+      hasPhotoData: !!(person && typeof person.photoDataUrl === 'string' && person.photoDataUrl.trim()),
+    }),
+  );
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] enrichOne slug extracted',
@@ -3574,6 +3601,14 @@ async function enrichOne(person, context) {
     });
   }
   if (!html || !html.trim()) {
+    console.log(
+      '[reknown-ext] enrichOne fetch payload snapshot',
+      JSON.stringify({
+        htmlNonEmpty: false,
+        jsonPayloadNonEmpty: false,
+        selectorsMatched: false,
+      }),
+    );
     debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'empty_body' }));
     logStageBoundary(stageContext, 'parse.completed', parseStart);
     return finalizeResult({
@@ -3584,6 +3619,28 @@ async function enrichOne(person, context) {
       },
     });
   }
+  const parserSignals = {
+    hasJsonLdPerson: html.includes('"@type":"Person"') || html.includes('"@type": "Person"'),
+    hasTopCardSelector: html.includes('pv-top-card'),
+    hasDisplayPhotoSelector: html.includes('profile-displayphoto-shrink'),
+  };
+  const jsonPayloadNonEmpty =
+    (html.includes('application/ld+json') && parserSignals.hasJsonLdPerson) ||
+    /"included"\s*:/.test(html) ||
+    /"entityUrn"\s*:/.test(html);
+  console.log(
+    '[reknown-ext] enrichOne fetch payload snapshot',
+    JSON.stringify({
+      htmlNonEmpty: true,
+      jsonPayloadNonEmpty: jsonPayloadNonEmpty,
+      selectorsMatched: !!(
+        parserSignals.hasJsonLdPerson ||
+        parserSignals.hasTopCardSelector ||
+        parserSignals.hasDisplayPhotoSelector
+      ),
+      parserSignals: parserSignals,
+    }),
+  );
   if (DEBUG_VERBOSE) {
     // Body-level sanity: truncation detector, logged-out-shell detector,
     // and a compact fingerprint so we can tell if LinkedIn is returning
