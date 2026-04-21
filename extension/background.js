@@ -84,6 +84,24 @@ const MAX_PHOTO_DIM = 400;
 const DEBUG_VERBOSE = true;
 const DEBUG_ENABLE_LEGACY_VECTOR_WINDOW_FALLBACK = false;
 
+function debugEvent(stage, payload) {
+  const event = Object.assign(
+    {
+      requestId: null,
+      personId: null,
+      slug: null,
+      strategy: null,
+      ms: null,
+      status: null,
+      rejectReason: null,
+    },
+    payload || {},
+    { stage: String(stage || '') },
+  );
+  event.req = event.requestId;
+  console.log('[reknown-ext][event] ' + JSON.stringify(event));
+}
+
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
 let rateLimitCooldownUntil = 0;
@@ -2255,7 +2273,7 @@ function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug) {
   };
 }
 
-async function extractPhotoUrl(html, slug) {
+async function extractPhotoUrl(html, slug, eventContext) {
   const makeFailure = function (reason, extra) {
     return Object.assign({ url: null, rejectReason: reason || null }, extra || {});
   };
@@ -2407,6 +2425,22 @@ async function extractPhotoUrl(html, slug) {
       const result = normalizeStrategyResult(await fn(html, slug), name, slug, defaultSource);
       const url = result.url;
       const dt = Date.now() - t0;
+      const stageByStrategy = {
+        'json-ld': 'extract.jsonld',
+        'vector-image': 'extract.vector',
+        'licdn-regex': 'extract.licdn',
+      };
+      if (stageByStrategy[name]) {
+        debugEvent(stageByStrategy[name], {
+          requestId: eventContext && eventContext.requestId,
+          personId: eventContext && eventContext.personId,
+          slug: slug || null,
+          strategy: name,
+          ms: dt,
+          status: url ? 'ok' : 'empty',
+          rejectReason: result.rejectReason || null,
+        });
+      }
       if (!url) {
         outcomes.push({ strategy: name, result: 'null', source: result.source, rejectReason: result.rejectReason || null, ms: dt });
         continue;
@@ -2475,6 +2509,15 @@ async function extractPhotoUrl(html, slug) {
       );
       const overlayUrl = overlayResult.url;
       const dt = Date.now() - overlayStart;
+      debugEvent('extract.overlay', {
+        requestId: eventContext && eventContext.requestId,
+        personId: eventContext && eventContext.personId,
+        slug: slug || null,
+        strategy: 'overlay-photo',
+        ms: dt,
+        status: overlayUrl ? 'ok' : 'empty',
+        rejectReason: overlayResult.rejectReason || null,
+      });
       if (!overlayUrl) {
         outcomes.push({
           strategy: 'overlay-photo',
@@ -2564,6 +2607,15 @@ async function extractPhotoUrl(html, slug) {
         : null
     ),
   );
+  debugEvent('candidate.rank', {
+    requestId: eventContext && eventContext.requestId,
+    personId: eventContext && eventContext.personId,
+    slug: slug || null,
+    strategy: winner ? winner.strategy : null,
+    ms: null,
+    status: winner ? 'selected' : 'none',
+    rejectReason: winner ? (winner.rejectReason || null) : (chooseDominantRejectReason(outcomes) || null),
+  });
   if (winner) {
     return {
       url: winner.url,
@@ -2642,7 +2694,7 @@ async function resizeBlob(blob) {
   }
 }
 
-async function enrichOne(person) {
+async function enrichOne(person, context) {
   const rawUrl = person && person.linkedinUrl;
   const url = String(rawUrl || '').trim();
   if (DEBUG_VERBOSE) {
@@ -2666,6 +2718,11 @@ async function enrichOne(person) {
   // own nav/menu photo when LinkedIn serves HTML containing both.
   const slugMatch = url.match(/\/in\/([^\s/?#]+)/i);
   const slug = slugMatch ? decodeURIComponent(slugMatch[1]) : '';
+  const eventBase = {
+    requestId: context && context.requestId ? String(context.requestId) : null,
+    personId: person && person.id ? String(person.id) : null,
+    slug: slug || null,
+  };
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] enrichOne slug extracted',
@@ -2679,8 +2736,10 @@ async function enrichOne(person) {
     pageRes = await fetch(url, { credentials: 'include', redirect: 'follow' });
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile fetch threw', String(err), 'url=' + url);
+    debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
+  debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: pageRes.ok ? 'ok' : 'http_error', rejectReason: null }));
   if (DEBUG_VERBOSE) {
     const pageHdrs = {};
     for (const key of ['content-type', 'content-length', 'content-encoding', 'server', 'x-li-fabric', 'x-li-pop', 'x-frame-options']) {
@@ -2711,6 +2770,7 @@ async function enrichOne(person) {
     html = await pageRes.text();
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile body read threw', String(err));
+    debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
   if (DEBUG_VERBOSE) {
@@ -2773,7 +2833,8 @@ async function enrichOne(person) {
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     return { status: 'error', error: 'login_wall', fatal: true };
   }
-  const extraction = await extractPhotoUrl(html, slug);
+  debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'ok', rejectReason: null }));
+  const extraction = await extractPhotoUrl(html, slug, eventBase);
   const photoUrl =
     typeof extraction === 'string'
       ? extraction
@@ -2803,6 +2864,12 @@ async function enrichOne(person) {
     );
   }
   if (!photoUrl) {
+    debugEvent('result', Object.assign({}, eventBase, {
+      strategy: null,
+      ms: null,
+      status: 'error',
+      rejectReason: extractionRejectReason || extractionDominantRejectReason || 'no_photo_found',
+    }));
     return {
       status: 'error',
       error: {
@@ -2828,8 +2895,10 @@ async function enrichOne(person) {
     });
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo fetch threw', String(err));
+    debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
+  debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: imgRes.ok ? 'ok' : 'http_error', rejectReason: null }));
   if (DEBUG_VERBOSE) {
     const hdrs = {};
     for (const key of ['content-type', 'content-length', 'server', 'x-li-fabric', 'x-li-pop', 'x-cache', 'cf-ray']) {
@@ -2855,6 +2924,7 @@ async function enrichOne(person) {
         console.warn('[reknown-ext] photo fetch error body (first 300):', errBody.substring(0, 300));
       } catch { /* ignore body read failure */ }
     }
+    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
   let blob;
@@ -2862,6 +2932,7 @@ async function enrichOne(person) {
     blob = await imgRes.blob();
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo blob read threw', String(err));
+    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
   if (DEBUG_VERBOSE) {
@@ -2891,9 +2962,11 @@ async function enrichOne(person) {
     // app can persist it on the person. Having the original URL stored
     // means the "Edit person" form has something to show in the Photo URL
     // field instead of appearing blank after a successful enrichment.
+    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'success', rejectReason: null }));
     return { status: 'success', photoDataUrl: dataUrl, photoUrl: photoUrl };
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] resize threw', String(err));
+    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
 }
@@ -2957,7 +3030,7 @@ async function runBatch(requestId, people, tabId) {
       });
       let result;
       try {
-        result = await enrichOne(person);
+        result = await enrichOne(person, { requestId });
       } catch (err) {
         console.error('[reknown-ext] unexpected error', err);
         result = { status: 'error', error: 'fetch_failed' };
