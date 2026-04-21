@@ -366,26 +366,77 @@ function isFetchCancelledError(err) {
   return !!(err && typeof err === 'object' && err.code === 'fetch_cancelled');
 }
 
+function toPathTemplate(pathname) {
+  const parts = String(pathname || '')
+    .split('/')
+    .map((part) => {
+      if (!part) return part;
+      if (/^\d+$/.test(part)) return ':id';
+      if (/^[0-9a-f]{8,}$/i.test(part)) return ':token';
+      if (part.length > 40) return ':segment';
+      return part;
+    });
+  return parts.join('/') || '/';
+}
+
+function getUrlDiagnostics(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    return {
+      hostname: parsed.hostname || null,
+      pathTemplate: toPathTemplate(parsed.pathname || '/'),
+    };
+  } catch {
+    return {
+      hostname: null,
+      pathTemplate: null,
+    };
+  }
+}
+
 async function fetchWithTimeout(url, options, controlOptions) {
   const controls = controlOptions && typeof controlOptions === 'object' ? controlOptions : {};
   const timeoutMs = Math.max(1, Number(controls.timeoutMs) || 15000);
   const batch = controls.batch && typeof controls.batch === 'object' ? controls.batch : null;
   const externalSignal = controls.signal && typeof controls.signal === 'object' ? controls.signal : null;
+  const diagnosticContext = controls.diagnosticContext && typeof controls.diagnosticContext === 'object'
+    ? controls.diagnosticContext
+    : {};
   const controller = new AbortController();
   const mergedOptions = Object.assign({}, options || {}, { signal: controller.signal });
+  const requestUrlMeta = getUrlDiagnostics(url);
   let timeoutTriggered = false;
   let timerId = null;
   let externalAbortCleanup = null;
+  let abortReason = null;
+  let abortControllerTriggered = false;
+  console.log('[reknown-ext] fetch.diagnostics.request', {
+    requestUrl: requestUrlMeta,
+    fetchOptions: {
+      method: mergedOptions.method || 'GET',
+      mode: mergedOptions.mode || null,
+      credentials: mergedOptions.credentials || null,
+      redirect: mergedOptions.redirect || null,
+    },
+    timeoutMs: timeoutMs,
+    diagnosticContext: diagnosticContext,
+  });
   if (batch && batch.cancelled) {
+    abortControllerTriggered = true;
+    abortReason = 'batch_cancelled_before_fetch';
     controller.abort();
     throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_before_fetch', { isBatchCancelled: true });
   }
   if (externalSignal && externalSignal.aborted) {
+    abortControllerTriggered = true;
+    abortReason = 'request_cancelled_before_fetch';
     controller.abort();
     throw createTypedFetchError('fetch_cancelled', 'request_cancelled_before_fetch', { isRequestCancelled: true });
   }
   if (externalSignal) {
     const onExternalAbort = () => {
+      abortControllerTriggered = true;
+      abortReason = 'external_abort_signal';
       controller.abort();
     };
     externalSignal.addEventListener('abort', onExternalAbort, { once: true });
@@ -399,26 +450,69 @@ async function fetchWithTimeout(url, options, controlOptions) {
   }
   timerId = setTimeout(() => {
     timeoutTriggered = true;
+    abortControllerTriggered = true;
+    abortReason = 'timeout';
     controller.abort();
   }, timeoutMs);
   try {
     if (batch && batch.cancelled) {
+      abortControllerTriggered = true;
+      abortReason = 'batch_cancelled_before_fetch';
       controller.abort();
       throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_before_fetch', { isBatchCancelled: true });
     }
-    return await fetch(url, mergedOptions);
+    const response = await fetch(url, mergedOptions);
+    const finalUrlMeta = getUrlDiagnostics(response && response.url ? response.url : '');
+    console.log('[reknown-ext] fetch.diagnostics.response', {
+      response: {
+        status: response.status,
+        redirected: !!response.redirected,
+        finalUrlHostname: finalUrlMeta.hostname,
+      },
+      headers: {
+        contentType: response.headers.get('content-type') || null,
+        contentLength: response.headers.get('content-length') || null,
+      },
+      timeoutMs: timeoutMs,
+      abortControllerTriggered: abortControllerTriggered,
+      abortReason: abortReason,
+      diagnosticContext: diagnosticContext,
+    });
+    return response;
   } catch (err) {
     const abortErr = err && (err.name === 'AbortError' || err.code === 20);
+    console.warn('[reknown-ext] fetch.diagnostics.exception', {
+      exception: {
+        name: err && err.name ? err.name : null,
+        message: err && err.message ? err.message : String(err),
+        stack: err && err.stack ? String(err.stack) : null,
+      },
+      timeoutMs: timeoutMs,
+      abortControllerTriggered: abortControllerTriggered,
+      abortReason: abortReason,
+      diagnosticContext: diagnosticContext,
+    });
     if (timeoutTriggered && abortErr) {
-      throw createTypedFetchError('fetch_timeout', 'fetch timed out', { timeoutMs: timeoutMs });
+      throw createTypedFetchError('fetch_timeout', 'fetch timed out', {
+        timeoutMs: timeoutMs,
+        errorCode: 'timeout_abort',
+        abortReason: abortReason,
+      });
     }
     if (abortErr && ((batch && batch.cancelled) || (externalSignal && externalSignal.aborted))) {
       throw createTypedFetchError('fetch_cancelled', 'fetch_cancelled_during_fetch', {
         isBatchCancelled: !!(batch && batch.cancelled),
         isRequestCancelled: !!(externalSignal && externalSignal.aborted),
+        abortReason: abortReason,
       });
     }
-    throw err;
+    throw createTypedFetchError('fetch_failed', 'network error during fetch', {
+      errorCode: 'network_error',
+      abortReason: abortReason,
+      exceptionName: err && err.name ? err.name : null,
+      exceptionMessage: err && err.message ? err.message : String(err),
+      exceptionStack: err && err.stack ? String(err.stack) : null,
+    });
   } finally {
     if (timerId) clearTimeout(timerId);
     if (externalAbortCleanup) externalAbortCleanup();
@@ -3376,10 +3470,23 @@ async function enrichOne(person, context) {
       return fetchWithTimeout(
         url,
         { credentials: 'include', redirect: 'follow' },
-        { timeoutMs: profileFetchTimeoutMs, batch: batchRef, signal: requestController.signal },
+        {
+          timeoutMs: profileFetchTimeoutMs,
+          batch: batchRef,
+          signal: requestController.signal,
+          diagnosticContext: {
+            stage: 'fetch.profile',
+            requestId: eventBase.requestId || null,
+            personId: eventBase.personId || null,
+          },
+        },
       );
     });
   } catch (err) {
+    const fetchErrorCode =
+      err && typeof err === 'object' && typeof err.errorCode === 'string'
+        ? err.errorCode
+        : (isFetchTimeoutError(err) ? 'timeout_abort' : 'network_error');
     const rejectReason = isFetchCancelledError(err)
       ? 'cancelled'
       : (isFetchTimeoutError(err) ? 'fetch_timeout' : 'fetch_failed');
@@ -3394,7 +3501,15 @@ async function enrichOne(person, context) {
     }
     debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: 'error', rejectReason: rejectReason }));
     logStageBoundary(stageContext, 'fetch.completed', fetchStart);
-    return finalizeResult({ status: 'error', error: rejectReason });
+    return finalizeResult({
+      status: 'error',
+      error: isFetchCancelledError(err)
+        ? rejectReason
+        : {
+            code: fetchErrorCode,
+            reason: rejectReason,
+          },
+    });
   }
   debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: pageRes.ok ? 'ok' : 'http_error', rejectReason: null }));
   logStageBoundary(stageContext, 'fetch.completed', fetchStart);
@@ -3423,7 +3538,23 @@ async function enrichOne(person, context) {
     return finalizeResult({ status: 'error', error: 'rate_limited', fatal: true });
   }
   if (isLoginWall(pageRes)) {
-    return finalizeResult({ status: 'error', error: 'login_wall', fatal: true });
+    return finalizeResult({
+      status: 'error',
+      error: { code: 'challenge_page_detected', reason: 'login_wall' },
+      fatal: true,
+    });
+  }
+  if (pageRes.status >= 500) {
+    return finalizeResult({
+      status: 'error',
+      error: { code: 'http_5xx', reason: 'status_' + pageRes.status },
+    });
+  }
+  if (pageRes.status >= 400) {
+    return finalizeResult({
+      status: 'error',
+      error: { code: 'http_4xx', reason: 'status_' + pageRes.status },
+    });
   }
   let html;
   const parseStart = Date.now();
@@ -3434,7 +3565,24 @@ async function enrichOne(person, context) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile body read threw', String(err));
     debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
     logStageBoundary(stageContext, 'parse.completed', parseStart);
-    return finalizeResult({ status: 'error', error: 'fetch_failed' });
+    return finalizeResult({
+      status: 'error',
+      error: {
+        code: 'parse_error',
+        reason: 'response_text_read_failed',
+      },
+    });
+  }
+  if (!html || !html.trim()) {
+    debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'empty_body' }));
+    logStageBoundary(stageContext, 'parse.completed', parseStart);
+    return finalizeResult({
+      status: 'error',
+      error: {
+        code: 'empty_body',
+        reason: 'profile_html_empty',
+      },
+    });
   }
   if (DEBUG_VERBOSE) {
     // Body-level sanity: truncation detector, logged-out-shell detector,
@@ -3507,7 +3655,14 @@ async function enrichOne(person, context) {
   }
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
     logStageBoundary(stageContext, 'parse.completed', parseStart);
-    return finalizeResult({ status: 'error', error: 'login_wall', fatal: true });
+    return finalizeResult({
+      status: 'error',
+      error: {
+        code: 'challenge_page_detected',
+        reason: 'authwall_like_html',
+      },
+      fatal: true,
+    });
   }
   debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'ok', rejectReason: null }));
   logStageBoundary(stageContext, 'parse.completed', parseStart);
@@ -4041,6 +4196,10 @@ async function runBatch(requestId, people, tabId) {
         logStageBoundary(personStageContext, 'result.emitted', personStart);
       } else {
         failed++;
+        const progressErrorCode =
+          result && result.error && typeof result.error === 'object' && typeof result.error.code === 'string'
+            ? result.error.code
+            : (typeof result.error === 'string' ? result.error : 'unknown_error');
         const errorSelectedUrlFingerprint =
           enrichMutableState.selectedCandidate &&
           typeof enrichMutableState.selectedCandidate === 'object' &&
@@ -4054,6 +4213,7 @@ async function runBatch(requestId, people, tabId) {
           personName: person.name,
           status: 'error',
           error: result.error,
+          errorCode: progressErrorCode,
           index: i,
           total: people.length,
           intendedPersonId: person && person.id ? String(person.id) : null,
