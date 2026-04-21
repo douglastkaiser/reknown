@@ -2694,6 +2694,105 @@ async function resizeBlob(blob) {
   }
 }
 
+function stableHash32(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function maskSensitiveUrlBits(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/([?&]t=)[^&"'\\\s<>]+/gi, '$1<redacted>')
+    .replace(/([?&]v=)[^&"'\\\s<>]+/gi, '$1<redacted>')
+    .replace(/([?&](?:e|sig|signature)=)[^&"'\\\s<>]+/gi, '$1<redacted>');
+}
+
+function summarizeCandidateUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  const qIndex = url.indexOf('?');
+  return {
+    prefix: (qIndex === -1 ? url : url.substring(0, qIndex)).substring(0, 96),
+    hasParams: {
+      e: /[?&]e=/.test(url),
+      v: /[?&]v=/.test(url),
+      t: /[?&]t=/.test(url),
+    },
+  };
+}
+
+function compactNoPhotoFoundBundle(html, slug, extraction) {
+  const decoded = normalizeLinkedInHtml(html || '', 'no-photo-bundle');
+  const tokenCounts = {
+    publicIdentifier: countOccurrences(decoded, 'publicIdentifier'),
+    rootUrl: countOccurrences(decoded, 'rootUrl'),
+    fileIdentifyingUrlPathSegment: countOccurrences(decoded, 'fileIdentifyingUrlPathSegment'),
+    profileDisplayphoto: countOccurrences(decoded, 'profile-displayphoto'),
+  };
+  const candidateRegex = /https:\/\/media\.licdn\.com\/dms\/image\/[^"'\\\s<>]*profile-displayphoto(?:-shrink)?[^"'\\\s<>]*/g;
+  const ownerCounts = new Map();
+  const snippets = [];
+  const maskedUrls = [];
+  let match;
+  while ((match = candidateRegex.exec(decoded)) !== null && maskedUrls.length < 3) {
+    const idx = match.index;
+    const url = match[0];
+    maskedUrls.push(summarizeCandidateUrl(maskSensitiveUrlBits(url)));
+    const ownerWindow = decoded.substring(Math.max(0, idx - 450), Math.min(decoded.length, idx + 450));
+    const pidRegex = /"publicIdentifier"\s*:\s*"([^"]+)"/g;
+    let pidMatch;
+    while ((pidMatch = pidRegex.exec(ownerWindow)) !== null) {
+      const pid = pidMatch[1];
+      ownerCounts.set(pid, (ownerCounts.get(pid) || 0) + 1);
+    }
+    const snipStart = Math.max(0, idx - 100);
+    const snipEnd = Math.min(decoded.length, idx + 180);
+    const snippet = maskSensitiveUrlBits(decoded.substring(snipStart, snipEnd)).replace(/\s+/g, ' ').trim();
+    snippets.push(snippet.substring(0, 240));
+  }
+  const rejectedOutcomes = extraction && Array.isArray(extraction.outcomes)
+    ? extraction.outcomes.filter(function (o) { return o && o.result === 'candidate-rejected'; }).slice(0, 3)
+    : [];
+  const topOwners = Array.from(ownerCounts.entries())
+    .sort(function (a, b) { return b[1] - a[1]; })
+    .slice(0, 3)
+    .map(function (entry) { return { publicIdentifier: entry[0], hitsNearCandidates: entry[1] }; });
+  const fallbackSnippetAnchor = decoded.search(/profile-displayphoto|fileIdentifyingUrlPathSegment|rootUrl/i);
+  if (snippets.length === 0 && fallbackSnippetAnchor !== -1) {
+    const fallbackSnippet = decoded.substring(
+      Math.max(0, fallbackSnippetAnchor - 100),
+      Math.min(decoded.length, fallbackSnippetAnchor + 180),
+    );
+    snippets.push(maskSensitiveUrlBits(fallbackSnippet).replace(/\s+/g, ' ').trim().substring(0, 240));
+  }
+  if (slug && topOwners.length === 0) {
+    topOwners.push({ publicIdentifier: slug, hitsNearCandidates: 0, note: 'target_slug_no_nearby_candidate_owner' });
+  }
+  return {
+    htmlFingerprint: {
+      length: decoded.length,
+      hash32: stableHash32(decoded),
+    },
+    tokenCounts: tokenCounts,
+    topOwnerIdentifiers: topOwners,
+    maskedCandidateUrls: maskedUrls.filter(Boolean),
+    rejectedMatchSnippets: snippets.slice(0, 3),
+    rejectedOutcomes: rejectedOutcomes.map(function (o) {
+      return {
+        strategy: o.strategy || null,
+        source: o.source || null,
+        ownerMatch: o.ownerMatch || null,
+        rejectReason: o.rejectReason || null,
+        hasSig: !!o.hasSig,
+        hasExpiry: !!o.hasExpiry,
+      };
+    }),
+  };
+}
+
 async function enrichOne(person, context) {
   const rawUrl = person && person.linkedinUrl;
   const url = String(rawUrl || '').trim();
@@ -2864,6 +2963,13 @@ async function enrichOne(person, context) {
     );
   }
   if (!photoUrl) {
+    const compactBundle = compactNoPhotoFoundBundle(html, slug, extraction);
+    console.warn(
+      '[reknown-ext] no_photo_found compact bundle',
+      JSON.stringify(Object.assign({}, compactBundle, {
+        rejectReason: extractionRejectReason || extractionDominantRejectReason || 'no_photo_found',
+      })),
+    );
     debugEvent('result', Object.assign({}, eventBase, {
       strategy: null,
       ms: null,
