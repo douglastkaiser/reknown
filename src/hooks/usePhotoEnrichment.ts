@@ -6,6 +6,13 @@ export type EnrichErrorCode =
   | 'no_photo_found'
   | 'default_avatar'
   | 'fetch_failed'
+  | 'timeout_abort'
+  | 'network_error'
+  | 'http_4xx'
+  | 'http_5xx'
+  | 'challenge_page_detected'
+  | 'empty_body'
+  | 'parse_error'
   | 'login_wall'
   | 'rate_limited'
   | 'batch_already_running';
@@ -145,6 +152,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
                   reason?: string;
                   dominantRejectReason?: string;
                 };
+            errorCode?: string;
             aborted?: boolean;
             reason?: string;
             summary?: { total: number; success: number; failed: number };
@@ -230,7 +238,16 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
           return;
         }
         if (data.status === 'error' && data.personId) {
-          const normalized = normalizeEnrichError(data.error);
+          const normalized =
+            typeof data.errorCode === 'string' && data.errorCode.trim()
+              ? {
+                  error: data.errorCode,
+                  errorDetail:
+                    data.error && typeof data.error === 'object'
+                      ? normalizeEnrichError(data.error).errorDetail
+                      : undefined,
+                }
+              : normalizeEnrichError(data.error);
           setResults((r) => [
             ...r,
             {
