@@ -1707,28 +1707,31 @@ function extractFromLicdnRegex(html, slug) {
     const explicitOwnerMismatch = photoCandidates.filter(function (c) {
       return c.ownerPublicIdentifier && c.ownerPublicIdentifier.toLowerCase() !== slug.toLowerCase();
     });
-    const fallbackCandidates = directOwnerCandidates.length > 0
-      ? directOwnerCandidates
-      : photoCandidates.filter(function (c) { return !c.ownerPublicIdentifier; });
-    if (directOwnerCandidates.length === 0) {
-      photoOwnerSelection = chooseOwnerProximityCandidates(
-        fallbackCandidates,
-        function (c) { return c.index; },
-        ownerOffsets,
-        'licdn-regex',
-        slug,
-      );
-      allowedPhotoOffsets = new Set(photoOwnerSelection.pool.map(function (c) { return c.index; }));
-    } else {
+    if (directOwnerCandidates.length > 0) {
       allowedPhotoOffsets = new Set(directOwnerCandidates.map(function (c) { return c.index; }));
       photoOwnerSelection = {
         pool: directOwnerCandidates,
         mode: 'object-owned',
         reason: 'owner_public_identifier_match',
       };
+    } else {
+      photoOwnerSelection = {
+        pool: [],
+        mode: 'strict-owner-required',
+        reason: 'owner_public_identifier_missing',
+      };
+      if (DEBUG_VERBOSE) {
+        console.warn(
+          '[reknown-ext] licdn-regex: strict owner gating rejected non-bound displayphoto candidates',
+          'slug=' + slug,
+          'photoCandidates=' + photoCandidates.length,
+          'explicitOwnerMismatch=' + explicitOwnerMismatch.length,
+        );
+      }
+      return { url: null, rejectReason: 'owner_mismatch' };
     }
-    if (allowedPhotoOffsets && fallbackCandidates.some(function (c) { return c.ownerIsViewer; })) {
-      const nonViewerAllowed = fallbackCandidates.filter(function (c) {
+    if (allowedPhotoOffsets && directOwnerCandidates.some(function (c) { return c.ownerIsViewer; })) {
+      const nonViewerAllowed = directOwnerCandidates.filter(function (c) {
         return allowedPhotoOffsets.has(c.index) && !c.ownerIsViewer;
       });
       if (nonViewerAllowed.length > 0) {
@@ -1768,25 +1771,21 @@ function extractFromLicdnRegex(html, slug) {
     const directSynthesizedOwner = synthesizedCandidates.filter(function (c) {
       return c.ownerPublicIdentifier && c.ownerPublicIdentifier.toLowerCase() === slug.toLowerCase();
     });
-    const synthesizedEligible = directSynthesizedOwner.length > 0
-      ? directSynthesizedOwner
-      : synthesizedCandidates.filter(function (c) { return !c.ownerPublicIdentifier; });
-    var synthesizedOwnerSelection = null;
-    if (directSynthesizedOwner.length > 0) {
-      synthesizedOwnerSelection = {
-        pool: directSynthesizedOwner,
-        mode: 'object-owned',
-        reason: 'owner_public_identifier_match',
-      };
-    } else {
-      synthesizedOwnerSelection = chooseOwnerProximityCandidates(
-        synthesizedEligible,
-        function (c) { return c.index; },
-        ownerOffsets,
-        'licdn-regex synthesized',
-        slug,
-      );
+    if (directSynthesizedOwner.length === 0) {
+      if (DEBUG_VERBOSE && synthesizedCandidates.length > 0) {
+        console.warn(
+          '[reknown-ext] licdn-regex synthesized: strict owner gating rejected non-bound candidates',
+          'slug=' + slug,
+          'candidateCount=' + synthesizedCandidates.length,
+        );
+      }
+      return { url: null, rejectReason: 'owner_mismatch' };
     }
+    var synthesizedOwnerSelection = {
+      pool: directSynthesizedOwner,
+      mode: 'object-owned',
+      reason: 'owner_public_identifier_match',
+    };
     var selectedSynthesized = synthesizedOwnerSelection.pool;
     var nonViewerSynthesized = selectedSynthesized.filter(function (c) { return !c.ownerIsViewer; });
     if (nonViewerSynthesized.length > 0) selectedSynthesized = nonViewerSynthesized;
@@ -1892,25 +1891,21 @@ function extractFromLicdnRegex(html, slug) {
     var directGenericOwner = genericCandidates.filter(function (c) {
       return c.ownerPublicIdentifier && c.ownerPublicIdentifier.toLowerCase() === slug.toLowerCase();
     });
-    var genericEligible = directGenericOwner.length > 0
-      ? directGenericOwner
-      : genericCandidates.filter(function (c) { return !c.ownerPublicIdentifier; });
-    var genericOwnerSelection = null;
-    if (directGenericOwner.length > 0) {
-      genericOwnerSelection = {
-        pool: directGenericOwner,
-        mode: 'object-owned',
-        reason: 'owner_public_identifier_match',
-      };
-    } else {
-      genericOwnerSelection = chooseOwnerProximityCandidates(
-        genericEligible,
-        function (c) { return c.index; },
-        ownerOffsets,
-        'licdn-regex generic',
-        slug,
-      );
+    if (directGenericOwner.length === 0) {
+      if (DEBUG_VERBOSE && genericCandidates.length > 0) {
+        console.warn(
+          '[reknown-ext] licdn-regex generic: strict owner gating rejected non-bound candidates',
+          'slug=' + slug,
+          'candidateCount=' + genericCandidates.length,
+        );
+      }
+      return { url: null, rejectReason: 'owner_mismatch' };
     }
+    var genericOwnerSelection = {
+      pool: directGenericOwner,
+      mode: 'object-owned',
+      reason: 'owner_public_identifier_match',
+    };
     var selectedGeneric = genericOwnerSelection.pool;
     var selectedNonViewerGeneric = selectedGeneric.filter(function (c) { return !c.ownerIsViewer; });
     if (selectedNonViewerGeneric.length > 0) selectedGeneric = selectedNonViewerGeneric;
