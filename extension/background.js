@@ -2281,7 +2281,7 @@ function chooseOwnerProximityCandidates(items, getOffset, ownerOffsets, contextL
   }
 
   if (!ownerOffsets || ownerOffsets.length === 0) {
-    return { pool: [], mode: 'reject', reason: 'owner_proximity_reject_no_owner' };
+    return { pool: [], mode: 'reject', reason: 'owner_proximity_reject_no_owner', scored: scored };
   }
 
   const inStrictWindow = scored.filter(function (s) {
@@ -2769,11 +2769,20 @@ async function extractPhotoUrl(html, slug, eventContext) {
   }
   let dominantRejectReason = chooseDominantRejectReason(outcomes);
   dominantRejectReason = normalizeExplicitRejectCode(dominantRejectReason) || dominantRejectReason;
+  const normalizedOutcomeReasons = outcomes
+    .map(function (o) { return normalizeExplicitRejectCode(o && o.rejectReason) || (o && o.rejectReason) || null; })
+    .filter(function (r) { return !!r; });
+  if (normalizedOutcomeReasons.indexOf('reject.truncated_root_only') !== -1) {
+    dominantRejectReason = 'reject.truncated_root_only';
+  }
   if (!dominantRejectReason) {
     const authwallLike = /authwall|checkpoint/i.test(html) || /Join now/i.test(html) || /sign[- ]?in/i.test(html);
     const hasDisplayPhotoArtifacts = /profile-displayphoto-shrink/i.test(html) || /fileIdentifyingUrlPathSegment/i.test(html);
     if (authwallLike) dominantRejectReason = 'authwall_like_response';
     else if (!hasDisplayPhotoArtifacts) dominantRejectReason = 'no_displayphoto_artifacts';
+  } else if (dominantRejectReason === 'no_displayphoto_artifacts') {
+    const authwallLike = /authwall|checkpoint/i.test(html) || /Join now/i.test(html) || /sign[- ]?in/i.test(html);
+    if (authwallLike) dominantRejectReason = 'authwall_like_response';
   }
   if (DEBUG_VERBOSE) {
     console.log(
