@@ -110,6 +110,23 @@ function debugEvent(stage, payload) {
   console.log('[reknown-ext][event] ' + JSON.stringify(event));
 }
 
+function logStageBoundary(stageContext, stage, startedAtMs) {
+  const now = Date.now();
+  const ctx = stageContext && typeof stageContext === 'object' ? stageContext : {};
+  const elapsedMs = typeof startedAtMs === 'number' ? Math.max(0, now - startedAtMs) : 0;
+  console.log(
+    '[reknown-ext][stage] ' +
+      JSON.stringify({
+        requestId: ctx.requestId != null ? String(ctx.requestId) : null,
+        personId: ctx.personId != null ? String(ctx.personId) : null,
+        slug: ctx.slug != null ? String(ctx.slug) : null,
+        stage: String(stage || ''),
+        timestamp: new Date(now).toISOString(),
+        elapsedMs: elapsedMs,
+      }),
+  );
+}
+
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
 let rateLimitCooldownUntil = 0;
@@ -2937,6 +2954,15 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       }),
   });
   if (winner) {
+    logStageBoundary(
+      {
+        requestId: eventContext && eventContext.requestId,
+        personId: eventContext && eventContext.personId,
+        slug: slug || null,
+      },
+      'candidate.selected',
+      null,
+    );
     if (decisionStatus === 'accepted_fallback_low_confidence' && eventContext && eventContext.batchStats) {
       eventContext.batchStats.lowConfidenceFallbackAcceptedCount =
         (eventContext.batchStats.lowConfidenceFallbackAcceptedCount || 0) + 1;
@@ -3236,6 +3262,11 @@ async function enrichOne(person, context) {
     personId: person && person.id ? String(person.id) : null,
     slug: slug || null,
   };
+  const stageContext = {
+    requestId: eventBase.requestId,
+    personId: eventBase.personId,
+    slug: eventBase.slug,
+  };
   if (context && context.batchStats && typeof context.batchStats === 'object') {
     eventBase.batchStats = context.batchStats;
   }
@@ -3338,6 +3369,7 @@ async function enrichOne(person, context) {
     );
   }
   const fetchStart = Date.now();
+  logStageBoundary(stageContext, 'fetch.started', fetchStart);
   let pageRes;
   try {
     pageRes = await withRequestController('fetch.profile', function (requestController) {
@@ -3361,9 +3393,11 @@ async function enrichOne(person, context) {
       );
     }
     debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: 'error', rejectReason: rejectReason }));
+    logStageBoundary(stageContext, 'fetch.completed', fetchStart);
     return finalizeResult({ status: 'error', error: rejectReason });
   }
   debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: pageRes.ok ? 'ok' : 'http_error', rejectReason: null }));
+  logStageBoundary(stageContext, 'fetch.completed', fetchStart);
   if (DEBUG_VERBOSE) {
     const pageHdrs = {};
     for (const key of ['content-type', 'content-length', 'content-encoding', 'server', 'x-li-fabric', 'x-li-pop', 'x-frame-options']) {
@@ -3392,11 +3426,14 @@ async function enrichOne(person, context) {
     return finalizeResult({ status: 'error', error: 'login_wall', fatal: true });
   }
   let html;
+  const parseStart = Date.now();
+  logStageBoundary(stageContext, 'parse.started', parseStart);
   try {
     html = await pageRes.text();
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile body read threw', String(err));
     debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
+    logStageBoundary(stageContext, 'parse.completed', parseStart);
     return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
   if (DEBUG_VERBOSE) {
@@ -3469,9 +3506,11 @@ async function enrichOne(person, context) {
     }
   }
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
+    logStageBoundary(stageContext, 'parse.completed', parseStart);
     return finalizeResult({ status: 'error', error: 'login_wall', fatal: true });
   }
   debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'ok', rejectReason: null }));
+  logStageBoundary(stageContext, 'parse.completed', parseStart);
   let extraction = await extractPhotoUrl(html, slug, eventBase, {
     includeOverlayFallback: false,
     allowRelaxedOwnerAssociation: false,
@@ -3884,6 +3923,12 @@ async function runBatch(requestId, people, tabId) {
       const person = people[i];
       const personStart = Date.now();
       const personIdForTrace = person && person.id ? String(person.id) : 'unknown';
+      const personSlug = getLinkedInSlugFromProfileUrl(person && person.linkedinUrl);
+      const personStageContext = {
+        requestId: requestId,
+        personId: person && person.id ? String(person.id) : null,
+        slug: personSlug || null,
+      };
       const traceId = [String(requestId || 'req'), String(personIdForTrace), String(i), Date.now().toString(36)].join(':');
       console.log(
         '[reknown-ext] enriching',
@@ -3920,7 +3965,7 @@ async function runBatch(requestId, people, tabId) {
       enrichMutableState.previousPersonId = personIdForTrace;
       const immutableProgressMeta = {
         intendedPersonId: person && person.id ? String(person.id) : null,
-        slug: getLinkedInSlugFromProfileUrl(person && person.linkedinUrl),
+        slug: personSlug,
         photoSha256Prefix: null,
         photoDataUrlLen: 0,
         selectedUrlFingerprint: null,
@@ -3988,11 +4033,12 @@ async function runBatch(requestId, people, tabId) {
           index: i,
           total: people.length,
           intendedPersonId: person && person.id ? String(person.id) : null,
-          slug: getLinkedInSlugFromProfileUrl(person && person.linkedinUrl),
+          slug: personSlug,
           photoSha256Prefix: successPhotoSha256Prefix,
           photoDataUrlLen: successDataUrlLen,
           selectedUrlFingerprint: successSelectedUrlFingerprint,
         });
+        logStageBoundary(personStageContext, 'result.emitted', personStart);
       } else {
         failed++;
         const errorSelectedUrlFingerprint =
@@ -4011,11 +4057,12 @@ async function runBatch(requestId, people, tabId) {
           index: i,
           total: people.length,
           intendedPersonId: person && person.id ? String(person.id) : null,
-          slug: getLinkedInSlugFromProfileUrl(person && person.linkedinUrl),
+          slug: personSlug,
           photoSha256Prefix: null,
           photoDataUrlLen: 0,
           selectedUrlFingerprint: errorSelectedUrlFingerprint,
         });
+        logStageBoundary(personStageContext, 'result.emitted', personStart);
         if (result.fatal) {
           const cooldownMeta =
             result.error === 'rate_limited' ? setRateLimitCooldown() : getRateLimitCooldownMeta();
@@ -4202,6 +4249,11 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const people = Array.isArray(msg.people) ? msg.people : [];
     const requestId = String(msg.requestId || Date.now());
     const force = msg.force === true;
+    logStageBoundary(
+      { requestId: requestId, personId: null, slug: null },
+      'request.received',
+      null,
+    );
     const cooldownMeta = getRateLimitCooldownMeta();
     if (cooldownMeta.cooldownRemainingMs > 0) {
       console.warn(
