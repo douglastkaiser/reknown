@@ -206,8 +206,12 @@
         '[reknown-ext] forwarding',
         msg.type,
         'to page status=' + (msg.status || '') + ' personId=' + (msg.personId || ''),
+        'intendedPersonId=' + (msg.intendedPersonId || ''),
+        'slug=' + (msg.slug || ''),
+        'photoSha256Prefix=' + (msg.photoSha256Prefix || ''),
         'hasPhotoDataUrl=' + !!msg.photoDataUrl,
         'photoDataUrlLen=' + (msg.photoDataUrl ? msg.photoDataUrl.length : 0),
+        'selectedUrlFingerprint=' + (msg.selectedUrlFingerprint || ''),
         'aborted=' + (msg.aborted === true),
         'error=' + (typeof msg.error === 'undefined' ? '' : JSON.stringify(msg.error)),
       );

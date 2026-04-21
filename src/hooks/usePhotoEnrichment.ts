@@ -85,6 +85,27 @@ function normalizeEnrichError(
   return { error: 'unknown_error' };
 }
 
+async function computeDataUrlSha256Prefix(dataUrl: string, prefixLen = 12): Promise<string | null> {
+  try {
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx === -1) return null;
+    const b64 = dataUrl.slice(commaIdx + 1);
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const digestBytes = new Uint8Array(digest);
+    let hex = '';
+    for (let i = 0; i < digestBytes.length; i++) {
+      hex += digestBytes[i].toString(16).padStart(2, '0');
+      if (hex.length >= prefixLen) break;
+    }
+    return hex.slice(0, prefixLen);
+  } catch {
+    return null;
+  }
+}
+
 export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions) {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState<EnrichProgress>(INITIAL_PROGRESS);
@@ -111,6 +132,11 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             status?: string;
             photoDataUrl?: string;
             photoUrl?: string;
+            intendedPersonId?: string | null;
+            slug?: string | null;
+            photoSha256Prefix?: string | null;
+            photoDataUrlLen?: number;
+            selectedUrlFingerprint?: string | null;
             error?:
               | EnrichErrorCode
               | string
@@ -143,6 +169,11 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         'status=' + (data.status || ''),
         'personId=' + (data.personId || ''),
         'personName=' + (data.personName || ''),
+        'intendedPersonId=' + (data.intendedPersonId || ''),
+        'slug=' + (data.slug || ''),
+        'photoSha256Prefix=' + (data.photoSha256Prefix || ''),
+        'photoDataUrlLen=' + (typeof data.photoDataUrlLen === 'number' ? data.photoDataUrlLen : 0),
+        'selectedUrlFingerprint=' + (data.selectedUrlFingerprint || ''),
       );
       if (data.type === 'REKNOWN_ENRICH_PROGRESS') {
         if (data.status === 'started') {
@@ -155,8 +186,38 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
         }
         if (data.status === 'success' && data.personId && data.photoDataUrl) {
           const id = data.personId;
+          const intendedPersonId = data.intendedPersonId ?? null;
           const dataUrl = data.photoDataUrl;
           const rawUrl = data.photoUrl;
+          const photoDataUrlLen = typeof data.photoDataUrlLen === 'number' ? data.photoDataUrlLen : 0;
+          const lengthMatches = dataUrl.length === photoDataUrlLen;
+          void computeDataUrlSha256Prefix(dataUrl, 12).then((computedPrefix) => {
+            const expectedPrefix = data.photoSha256Prefix ?? null;
+            const hashMatches =
+              expectedPrefix === null ? computedPrefix === null : expectedPrefix === computedPrefix;
+            const personMatches = intendedPersonId !== null && id === intendedPersonId;
+            console.log(
+              '[reknown] received REKNOWN_ENRICH_PROGRESS',
+              'receivedPersonId=' + id,
+              'intendedPersonId=' + (intendedPersonId || ''),
+              'slug=' + (data.slug || ''),
+              'photoSha256Prefix=' + (data.photoSha256Prefix || ''),
+              'photoDataUrlLen=' + photoDataUrlLen,
+              'selectedUrlFingerprint=' + (data.selectedUrlFingerprint || ''),
+              'lengthMatches=' + lengthMatches,
+              'hashMatches=' + hashMatches,
+            );
+            if (!personMatches || !lengthMatches || !hashMatches) {
+              console.error('[reknown] message_integrity_error', {
+                sourcePersonId: intendedPersonId,
+                destinationPersonId: id,
+                lengthMatches,
+                hashMatches,
+                expectedPhotoSha256Prefix: expectedPrefix,
+                computedPhotoSha256Prefix: computedPrefix,
+              });
+            }
+          });
           void Promise.resolve(onPhotoFetchedRef.current(id, dataUrl, rawUrl)).catch((err) =>
             console.error('[reknown] onPhotoFetched failed', err),
           );
