@@ -1840,6 +1840,9 @@ function extractFromLicdnRegex(html, slug) {
   if (hasSignedPhotoCandidates) {
     return { url: null, rejectReason: 'signed_candidates_found_but_rejected' };
   }
+  if (truncatedRootOnlyCount > 0 && rootUrlCount > 0 && artifactSegmentCount === 0) {
+    return { url: null, rejectReason: 'reject.truncated_root_only' };
+  }
   if (countOccurrences(decoded, 'profile-displayphoto-shrink') === 0) {
     return { url: null, rejectReason: 'no_displayphoto_artifacts' };
   }
@@ -2381,6 +2384,29 @@ async function extractPhotoUrl(html, slug, eventContext) {
     }
     return bestReason;
   };
+  const normalizeExplicitRejectCode = function (reason) {
+    if (!reason || typeof reason !== 'string') return null;
+    if (reason.indexOf('reject.') === 0) return reason;
+    if (/owner_mismatch|owner_proximity_reject/i.test(reason)) return 'reject.owner_mismatch';
+    if (/truncated_root_only/i.test(reason)) return 'reject.truncated_root_only';
+    return null;
+  };
+  const getCandidateRejectCodes = function (candidate) {
+    const codes = [];
+    if (!candidate.isMediaLicdn) codes.push('reject.host_not_licdn');
+    if (!candidate.hasSig) codes.push('reject.missing_sig');
+    if (!candidate.hasExpiry) codes.push('reject.missing_expiry');
+    if (candidate.ownerMatch === 'mismatch') codes.push('reject.owner_mismatch');
+    if (isDefaultAvatar(candidate.url)) codes.push('reject.default_avatar');
+    const strategyCode = normalizeExplicitRejectCode(candidate.rejectReason);
+    if (strategyCode && codes.indexOf(strategyCode) === -1) codes.push(strategyCode);
+    if (codes.length === 0) codes.push('reject.low_confidence');
+    return codes;
+  };
+  const getDominantCandidateRejectCode = function (candidate) {
+    const codes = getCandidateRejectCodes(candidate);
+    return codes[0];
+  };
   // Upfront HTML-landscape snapshot: single-line view of every interesting
   // marker so we can correlate strategy outcomes with the underlying page
   // shape without having to parse other logs.
@@ -2475,8 +2501,11 @@ async function extractPhotoUrl(html, slug, eventContext) {
         isMediaLicdn: isMediaLicdn,
         isNonProfileAsset: isNonProfileAsset,
         rejectReason: result.rejectReason || null,
+        rejectReasons: [],
       };
       candidate.confidence = scoreCandidate(candidate);
+      candidate.rejectReasons = getCandidateRejectCodes(candidate);
+      candidate.rejectReason = getDominantCandidateRejectCode(candidate);
 
       const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
       outcomes.push({
@@ -2485,7 +2514,8 @@ async function extractPhotoUrl(html, slug, eventContext) {
         source: candidate.source,
         ownerMatch: candidate.ownerMatch,
         confidence: candidate.confidence,
-        rejectReason: candidate.rejectReason,
+        rejectReason: accepted ? null : candidate.rejectReason,
+        rejectReasons: accepted ? [] : candidate.rejectReasons,
         len: candidate.len,
         dims: candidate.dims ? (candidate.dims.width + 'x' + candidate.dims.height) : null,
         hasSig: candidate.hasSig,
@@ -2541,7 +2571,7 @@ async function extractPhotoUrl(html, slug, eventContext) {
         if (overlayResult.rejectReason) reasons.push('strategyReject:' + overlayResult.rejectReason);
         if (overlayResult.ownerMatch === 'mismatch') reasons.push('fail:owner mismatch');
         if (overlayResult.ownerMatch === 'exact' || overlayResult.ownerMatch === 'probable') reasons.push('pass:owner association ' + overlayResult.ownerMatch);
-        const candidate = {
+      const candidate = {
           url: overlayUrl,
           strategy: 'overlay-photo',
           source: overlayResult.source || 'overlay-photo-img',
@@ -2555,8 +2585,11 @@ async function extractPhotoUrl(html, slug, eventContext) {
           isMediaLicdn: isMediaLicdn,
           isNonProfileAsset: isNonProfileAsset,
           rejectReason: overlayResult.rejectReason || null,
+          rejectReasons: [],
         };
         candidate.confidence = scoreCandidate(candidate);
+        candidate.rejectReasons = getCandidateRejectCodes(candidate);
+        candidate.rejectReason = getDominantCandidateRejectCode(candidate);
         const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
         outcomes.push({
           strategy: 'overlay-photo',
@@ -2564,7 +2597,8 @@ async function extractPhotoUrl(html, slug, eventContext) {
           source: candidate.source,
           ownerMatch: candidate.ownerMatch,
           confidence: candidate.confidence,
-          rejectReason: candidate.rejectReason,
+          rejectReason: accepted ? null : candidate.rejectReason,
+          rejectReasons: accepted ? [] : candidate.rejectReasons,
           len: candidate.len,
           dims: candidate.dims ? (candidate.dims.width + 'x' + candidate.dims.height) : null,
           hasSig: candidate.hasSig,
@@ -2629,6 +2663,7 @@ async function extractPhotoUrl(html, slug, eventContext) {
     };
   }
   let dominantRejectReason = chooseDominantRejectReason(outcomes);
+  dominantRejectReason = normalizeExplicitRejectCode(dominantRejectReason) || dominantRejectReason;
   if (!dominantRejectReason) {
     const authwallLike = /authwall|checkpoint/i.test(html) || /Join now/i.test(html) || /sign[- ]?in/i.test(html);
     const hasDisplayPhotoArtifacts = /profile-displayphoto-shrink/i.test(html) || /fileIdentifyingUrlPathSegment/i.test(html);
@@ -2786,6 +2821,7 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
         source: o.source || null,
         ownerMatch: o.ownerMatch || null,
         rejectReason: o.rejectReason || null,
+        rejectReasons: Array.isArray(o.rejectReasons) ? o.rejectReasons.slice(0, 8) : [],
         hasSig: !!o.hasSig,
         hasExpiry: !!o.hasExpiry,
       };
