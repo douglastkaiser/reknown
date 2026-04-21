@@ -3090,7 +3090,7 @@ async function enrichOne(person, context) {
     );
   }
   if (!LINKEDIN_PROFILE_RE.test(url)) {
-    return { status: 'error', error: 'invalid_url' };
+    return finalizeResult({ status: 'error', error: 'invalid_url' });
   }
   // publicIdentifier slug from the profile URL path. We use this inside
   // extractPhotoUrl to disambiguate the target's photo from the viewer's
@@ -3102,6 +3102,60 @@ async function enrichOne(person, context) {
     personId: person && person.id ? String(person.id) : null,
     slug: slug || null,
   };
+  const traceId = context && context.traceId ? String(context.traceId) : null;
+  const mutableState =
+    context && context.mutableState && typeof context.mutableState === 'object'
+      ? context.mutableState
+      : null;
+  if (mutableState) {
+    if (
+      mutableState.previousPersonId &&
+      mutableState.previousPersonId !== eventBase.personId &&
+      !!mutableState.photoDataUrl
+    ) {
+      console.warn(
+        '[reknown-ext] state_leak_detected',
+        'traceId=' + (traceId || ''),
+        'personId=' + (eventBase.personId || ''),
+        'prevPersonId=' + mutableState.previousPersonId,
+        'stalePhotoDataUrlLen=' + String(mutableState.photoDataUrl.length || 0),
+      );
+    }
+    console.log(
+      '[reknown-ext] enrichOne mutable-state start',
+      'traceId=' + (traceId || ''),
+      'personId=' + (eventBase.personId || ''),
+      'selectedCandidate=' + JSON.stringify(mutableState.selectedCandidate),
+      'photoDataUrl=' + (mutableState.photoDataUrl ? ('len:' + mutableState.photoDataUrl.length) : null),
+      'photoBlob=' + (mutableState.photoBlob ? ('size:' + mutableState.photoBlob.size) : null),
+      'photoHash=' + (mutableState.photoHash || null),
+    );
+    mutableState.selectedCandidate = null;
+    mutableState.photoDataUrl = null;
+    mutableState.photoBlob = null;
+    mutableState.photoHash = null;
+    mutableState.previousPersonId = eventBase.personId;
+  }
+  function finalizeResult(resultObj) {
+    if (!mutableState) return resultObj;
+    const isNewResultObject = mutableState.lastResultObject !== resultObj;
+    const resultPhotoBufferRef = resultObj && typeof resultObj === 'object' ? resultObj.photoDataUrl : null;
+    const isPhotoBufferShared = !!(
+      resultPhotoBufferRef &&
+      mutableState.lastPhotoBufferRef &&
+      resultPhotoBufferRef === mutableState.lastPhotoBufferRef
+    );
+    console.log(
+      '[reknown-ext] enrichOne result refs',
+      'traceId=' + (traceId || ''),
+      'personId=' + (eventBase.personId || ''),
+      'isNewResultObject=' + isNewResultObject,
+      'isPhotoBufferShared=' + isPhotoBufferShared,
+    );
+    mutableState.lastResultObject = resultObj;
+    mutableState.lastPhotoBufferRef = resultPhotoBufferRef || null;
+    return resultObj;
+  }
   applyDebugContext({ requestId: eventBase.requestId, slug: slug || null });
   if (DEBUG_VERBOSE) {
     console.log(
@@ -3117,7 +3171,7 @@ async function enrichOne(person, context) {
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile fetch threw', String(err), 'url=' + url);
     debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: 'error', rejectReason: 'fetch_failed' }));
-    return { status: 'error', error: 'fetch_failed' };
+    return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
   debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: pageRes.ok ? 'ok' : 'http_error', rejectReason: null }));
   if (DEBUG_VERBOSE) {
@@ -3140,10 +3194,10 @@ async function enrichOne(person, context) {
     );
   }
   if (isRateLimited(pageRes)) {
-    return { status: 'error', error: 'rate_limited', fatal: true };
+    return finalizeResult({ status: 'error', error: 'rate_limited', fatal: true });
   }
   if (isLoginWall(pageRes)) {
-    return { status: 'error', error: 'login_wall', fatal: true };
+    return finalizeResult({ status: 'error', error: 'login_wall', fatal: true });
   }
   let html;
   try {
@@ -3151,7 +3205,7 @@ async function enrichOne(person, context) {
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile body read threw', String(err));
     debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
-    return { status: 'error', error: 'fetch_failed' };
+    return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
   if (DEBUG_VERBOSE) {
     // Body-level sanity: truncation detector, logged-out-shell detector,
@@ -3211,7 +3265,7 @@ async function enrichOne(person, context) {
     }
   }
   if (/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html)) {
-    return { status: 'error', error: 'login_wall', fatal: true };
+    return finalizeResult({ status: 'error', error: 'login_wall', fatal: true });
   }
   debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'ok', rejectReason: null }));
   let extraction = await extractPhotoUrl(html, slug, eventBase, {
@@ -3230,6 +3284,12 @@ async function enrichOne(person, context) {
     extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
       ? extraction.dominantRejectReason
       : null;
+  if (mutableState) {
+    mutableState.selectedCandidate =
+      extraction && typeof extraction === 'object' && Object.prototype.hasOwnProperty.call(extraction, 'selectedCandidate')
+        ? extraction.selectedCandidate
+        : null;
+  }
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] extractPhotoUrl result:',
@@ -3349,17 +3409,17 @@ async function enrichOne(person, context) {
       personId: eventBase.personId,
       slug: eventBase.slug,
     }));
-    return {
+    return finalizeResult({
       status: 'error',
       error: {
         code: 'no_photo_found',
         reason: extractionRejectReason || extractionDominantRejectReason || null,
         dominantRejectReason: extractionDominantRejectReason || extractionRejectReason || null,
       },
-    };
+    });
   }
   if (isDefaultAvatar(photoUrl)) {
-    return { status: 'error', error: 'default_avatar' };
+    return finalizeResult({ status: 'error', error: 'default_avatar' });
   }
   if (DEBUG_VERBOSE) {
     console.log('[reknown-ext] fetching photo url=' + photoUrl);
@@ -3375,7 +3435,7 @@ async function enrichOne(person, context) {
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo fetch threw', String(err));
     debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: 'error', rejectReason: 'fetch_failed' }));
-    return { status: 'error', error: 'fetch_failed' };
+    return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
   debugEvent('fetch.photo', Object.assign({}, eventBase, {
     ms: Date.now() - photoFetchStart,
@@ -3421,7 +3481,7 @@ async function enrichOne(person, context) {
       personId: eventBase.personId,
       slug: eventBase.slug,
     }));
-    return { status: 'error', error: 'fetch_failed' };
+    return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
   let blob;
   try {
@@ -3438,8 +3498,9 @@ async function enrichOne(person, context) {
       personId: eventBase.personId,
       slug: eventBase.slug,
     }));
-    return { status: 'error', error: 'fetch_failed' };
+    return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
+  if (mutableState) mutableState.photoBlob = blob;
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] photo blob',
@@ -3460,6 +3521,10 @@ async function enrichOne(person, context) {
   try {
     const photoSha256Prefix = await computeBlobSha256Prefix(blob, 12);
     const dataUrl = await resizeBlob(blob);
+    if (mutableState) {
+      mutableState.photoHash = photoSha256Prefix;
+      mutableState.photoDataUrl = dataUrl;
+    }
     if (DEBUG_VERBOSE) {
       // Message-passing to the tab has a size cap; huge data URLs can be
       // silently dropped on some browsers. Flag that here so we see it
@@ -3487,7 +3552,8 @@ async function enrichOne(person, context) {
       personId: eventBase.personId,
       slug: eventBase.slug,
     }));
-    return { status: 'success', photoDataUrl: dataUrl, photoUrl: photoUrl };
+    const resultPayload = { status: 'success', photoDataUrl: dataUrl, photoUrl: photoUrl };
+    return finalizeResult(resultPayload);
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] resize threw', String(err));
     debugEvent('result', Object.assign({}, eventBase, {
@@ -3500,7 +3566,7 @@ async function enrichOne(person, context) {
       personId: eventBase.personId,
       slug: eventBase.slug,
     }));
-    return { status: 'error', error: 'fetch_failed' };
+    return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
 }
 
@@ -3510,6 +3576,15 @@ async function runBatch(requestId, people, tabId) {
   applyDebugContext({ requestId: requestId, slug: null });
   const throttleCfg = getActiveThrottleConfig();
   const batch = { cancelled: false };
+  const enrichMutableState = {
+    previousPersonId: null,
+    selectedCandidate: null,
+    photoDataUrl: null,
+    photoBlob: null,
+    photoHash: null,
+    lastResultObject: null,
+    lastPhotoBufferRef: null,
+  };
   activeBatches.set(requestId, batch);
   const batchStart = Date.now();
   console.log(
@@ -3549,12 +3624,41 @@ async function runBatch(requestId, people, tabId) {
       }
       const person = people[i];
       const personStart = Date.now();
+      const personIdForTrace = person && person.id ? String(person.id) : 'unknown';
+      const traceId = [String(requestId || 'req'), String(personIdForTrace), String(i), Date.now().toString(36)].join(':');
       console.log(
         '[reknown-ext] enriching',
         i + 1 + '/' + people.length,
         'name=' + (person && person.name),
         'elapsedBatchMs=' + (personStart - batchStart),
       );
+      if (
+        enrichMutableState.previousPersonId &&
+        enrichMutableState.previousPersonId !== personIdForTrace &&
+        !!enrichMutableState.photoDataUrl
+      ) {
+        console.warn(
+          '[reknown-ext] state_leak_detected',
+          'traceId=' + traceId,
+          'personId=' + personIdForTrace,
+          'prevPersonId=' + enrichMutableState.previousPersonId,
+          'stalePhotoDataUrlLen=' + String(enrichMutableState.photoDataUrl.length || 0),
+        );
+      }
+      console.log(
+        '[reknown-ext] enrich mutable-state start',
+        'traceId=' + traceId,
+        'personId=' + personIdForTrace,
+        'selectedCandidate=' + JSON.stringify(enrichMutableState.selectedCandidate),
+        'photoDataUrl=' + (enrichMutableState.photoDataUrl ? ('len:' + enrichMutableState.photoDataUrl.length) : null),
+        'photoBlob=' + (enrichMutableState.photoBlob ? ('size:' + enrichMutableState.photoBlob.size) : null),
+        'photoHash=' + (enrichMutableState.photoHash || null),
+      );
+      enrichMutableState.selectedCandidate = null;
+      enrichMutableState.photoDataUrl = null;
+      enrichMutableState.photoBlob = null;
+      enrichMutableState.photoHash = null;
+      enrichMutableState.previousPersonId = personIdForTrace;
       sendToTab(tabId, {
         type: 'REKNOWN_ENRICH_PROGRESS',
         requestId,
@@ -3566,7 +3670,7 @@ async function runBatch(requestId, people, tabId) {
       });
       let result;
       try {
-        result = await enrichOne(person, { requestId });
+        result = await enrichOne(person, { requestId, traceId: traceId, mutableState: enrichMutableState });
       } catch (err) {
         console.error('[reknown-ext] unexpected error', err);
         result = { status: 'error', error: 'fetch_failed' };
