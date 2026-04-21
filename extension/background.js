@@ -2474,6 +2474,15 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     if (candidate.isNonProfileAsset) score -= 45;
     return Math.max(0, Math.min(100, score));
   };
+  const minAcceptScore =
+    options && typeof options.minAcceptScore === 'number'
+      ? Math.max(0, Math.min(100, Math.floor(options.minAcceptScore)))
+      : 80;
+  const fallbackAllowed = !!(options && options.allowLowConfidenceFallback);
+  const fallbackPolicyName =
+    fallbackAllowed && options && typeof options.fallbackPolicyName === 'string' && options.fallbackPolicyName
+      ? options.fallbackPolicyName
+      : (fallbackAllowed ? 'top_score_min_threshold' : null);
   const chooseDominantRejectReason = function (strategyOutcomes) {
     const counts = new Map();
     for (let i = 0; i < strategyOutcomes.length; i++) {
@@ -2774,7 +2783,26 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     }
   }
   validCandidates.sort(function (a, b) { return b.confidence - a.confidence; });
-  const winner = validCandidates.length > 0 ? validCandidates[0] : null;
+  allCandidates.sort(function (a, b) { return b.confidence - a.confidence; });
+  const primaryWinner = validCandidates.length > 0 ? validCandidates[0] : null;
+  const fallbackWinner =
+    !primaryWinner && fallbackAllowed
+      ? (allCandidates.find(function (candidate) {
+        return (
+          candidate &&
+          candidate.confidence >= minAcceptScore &&
+          candidate.ownerMatch !== 'mismatch' &&
+          !candidate.isNonProfileAsset
+        );
+      }) || null)
+      : null;
+  const winner = primaryWinner || fallbackWinner;
+  const decisionStatus = primaryWinner
+    ? 'accepted_primary'
+    : (fallbackWinner ? 'accepted_fallback_low_confidence' : 'rejected_no_candidate');
+  const decisionReason = primaryWinner
+    ? 'primary_candidate_meets_hard_requirements'
+    : (fallbackWinner ? 'fallback_top_candidate_meets_min_score' : 'no_candidate_met_acceptance_rules');
   const candidateSummary = validCandidates.map(function (c) {
     return {
       source: c.source,
@@ -2810,12 +2838,17 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     slug: slug || null,
     strategy: winner ? winner.strategy : null,
     ms: null,
-    status: winner ? 'selected' : 'none',
+    status: decisionStatus,
+    decisionReason: decisionReason,
+    score: winner ? winner.confidence : null,
+    minAcceptScore: minAcceptScore,
+    fallbackAllowed: fallbackAllowed,
+    fallbackPolicyName: fallbackPolicyName,
+    warning: decisionStatus === 'accepted_fallback_low_confidence',
     rejectReason: winner ? (winner.rejectReason || null) : (chooseDominantRejectReason(outcomes) || null),
     candidateCount: allCandidates.length,
     topCandidates: allCandidates
       .slice()
-      .sort(function (a, b) { return b.confidence - a.confidence; })
       .slice(0, 3)
       .map(function (c) {
         return {
@@ -2826,12 +2859,23 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       }),
   });
   if (winner) {
+    if (decisionStatus === 'accepted_fallback_low_confidence' && eventContext && eventContext.batchStats) {
+      eventContext.batchStats.lowConfidenceFallbackAcceptedCount =
+        (eventContext.batchStats.lowConfidenceFallbackAcceptedCount || 0) + 1;
+    }
     return {
       url: winner.url,
       confidence: winner.confidence,
       ownerMatch: winner.ownerMatch,
       source: winner.source,
       reasons: winner.reasons,
+      selectedCandidate: {
+        score: winner.confidence,
+        strategy: winner.strategy,
+        source: winner.source,
+        decisionStatus: decisionStatus,
+        warning: decisionStatus === 'accepted_fallback_low_confidence',
+      },
       rejectReason: winner.rejectReason || null,
       dominantRejectReason: null,
       outcomes: outcomes,
@@ -3102,6 +3146,9 @@ async function enrichOne(person, context) {
     personId: person && person.id ? String(person.id) : null,
     slug: slug || null,
   };
+  if (context && context.batchStats && typeof context.batchStats === 'object') {
+    eventBase.batchStats = context.batchStats;
+  }
   const traceId = context && context.traceId ? String(context.traceId) : null;
   const mutableState =
     context && context.mutableState && typeof context.mutableState === 'object'
@@ -3369,6 +3416,9 @@ async function enrichOne(person, context) {
         includeOverlayFallback: false,
         allowRelaxedOwnerAssociation: true,
         relaxedRequiresSingleOwnerGroup: true,
+        allowLowConfidenceFallback: true,
+        minAcceptScore: 58,
+        fallbackPolicyName: 'relaxed_owner_low_confidence',
       });
       photoUrl =
         typeof extraction === 'string'
@@ -3576,6 +3626,9 @@ async function runBatch(requestId, people, tabId) {
   applyDebugContext({ requestId: requestId, slug: null });
   const throttleCfg = getActiveThrottleConfig();
   const batch = { cancelled: false };
+  const batchStats = {
+    lowConfidenceFallbackAcceptedCount: 0,
+  };
   const enrichMutableState = {
     previousPersonId: null,
     selectedCandidate: null,
@@ -3670,7 +3723,12 @@ async function runBatch(requestId, people, tabId) {
       });
       let result;
       try {
-        result = await enrichOne(person, { requestId, traceId: traceId, mutableState: enrichMutableState });
+        result = await enrichOne(person, {
+          requestId,
+          traceId: traceId,
+          mutableState: enrichMutableState,
+          batchStats,
+        });
       } catch (err) {
         console.error('[reknown-ext] unexpected error', err);
         result = { status: 'error', error: 'fetch_failed' };
@@ -3726,7 +3784,18 @@ async function runBatch(requestId, people, tabId) {
             aborted: true,
             reason: result.error,
             cooldown: cooldownMeta,
-            summary: { total: people.length, success, failed, processed: i + 1 },
+            summary: {
+              total: people.length,
+              success,
+              failed,
+              processed: i + 1,
+              lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
+            },
+          });
+          debugEvent('batch.summary', {
+            requestId: requestId,
+            status: 'aborted',
+            lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
           });
           return;
         }
@@ -3762,7 +3831,18 @@ async function runBatch(requestId, people, tabId) {
       type: 'REKNOWN_ENRICH_COMPLETE',
       requestId,
       aborted: batch.cancelled,
-      summary: { total: people.length, success, failed, processed: success + failed },
+      summary: {
+        total: people.length,
+        success,
+        failed,
+        processed: success + failed,
+        lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
+      },
+    });
+    debugEvent('batch.summary', {
+      requestId: requestId,
+      status: batch.cancelled ? 'cancelled' : 'complete',
+      lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
     });
   } finally {
     activeBatches.delete(requestId);
