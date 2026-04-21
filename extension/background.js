@@ -622,7 +622,8 @@ function normalizeLinkedInHtml(html, debugLabel) {
 // The full photo URL = rootUrl + fileIdentifyingUrlPathSegment. The bare
 // rootUrl (~85 chars) is what licdn-regex matches and rejects as truncated;
 // we need this strategy to construct the real signed URL.
-function extractFromVectorImage(html, slug) {
+function extractFromVectorImage(html, slug, options) {
+  const vectorOptions = options || {};
   const decoded = normalizeLinkedInHtml(html, 'vector-image');
 
   // Upfront diagnostics: how many artifacts / VectorImage objects / rootUrls
@@ -843,7 +844,11 @@ function extractFromVectorImage(html, slug) {
       );
     }
     if (ownerSelection.pool.length === 0) {
-      const relaxedSelection = chooseRelaxedSingleOwnerAssociation(proximityEligible, ownerOffsets, slug);
+      const relaxedSelection = vectorOptions.allowRelaxedOwnerAssociation
+        ? chooseRelaxedSingleOwnerAssociation(proximityEligible, ownerOffsets, slug, {
+          requireSingleGroup: !!vectorOptions.relaxedRequiresSingleOwnerGroup,
+        })
+        : null;
       if (relaxedSelection && relaxedSelection.pool && relaxedSelection.pool.length > 0) {
         pool = relaxedSelection.pool;
         if (DEBUG_VERBOSE) {
@@ -2334,7 +2339,8 @@ function extractDigitalMediaAssetId(rootUrl) {
   return m ? m[1] : '';
 }
 
-function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug) {
+function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug, options) {
+  const relaxedOptions = options || {};
   if (!slug || !ownerOffsets || ownerOffsets.length === 0 || !items || items.length === 0) return null;
 
   const groups = new Map();
@@ -2361,6 +2367,7 @@ function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug) {
     }
   });
   if (scoredGroups.length === 0) return null;
+  if (relaxedOptions.requireSingleGroup && scoredGroups.length !== 1) return null;
 
   scoredGroups.sort(function (a, b) { return a.ownerDistance - b.ownerDistance; });
   const best = scoredGroups[0];
@@ -2379,7 +2386,15 @@ function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug) {
   };
 }
 
-async function extractPhotoUrl(html, slug, eventContext) {
+async function extractPhotoUrl(html, slug, eventContext, options) {
+  const extractOptions = Object.assign(
+    {
+      includeOverlayFallback: true,
+      allowRelaxedOwnerAssociation: true,
+      relaxedRequiresSingleOwnerGroup: false,
+    },
+    options || {},
+  );
   const makeFailure = function (reason, extra) {
     return Object.assign({ url: null, rejectReason: reason || null }, extra || {});
   };
@@ -2551,7 +2566,15 @@ async function extractPhotoUrl(html, slug, eventContext) {
       // All strategy fns accept (html, slug); most ignore the slug, but
       // vector-image and licdn-regex use it to pick the target's rootUrl
       // rather than whichever one happens to appear first in the page.
-      const result = normalizeStrategyResult(await fn(html, slug), name, slug, defaultSource);
+      const result = normalizeStrategyResult(
+        await fn(html, slug, {
+          allowRelaxedOwnerAssociation: !!extractOptions.allowRelaxedOwnerAssociation,
+          relaxedRequiresSingleOwnerGroup: !!extractOptions.relaxedRequiresSingleOwnerGroup,
+        }),
+        name,
+        slug,
+        defaultSource,
+      );
       const url = result.url;
       const dt = Date.now() - t0;
       const stageByStrategy = {
@@ -2631,7 +2654,7 @@ async function extractPhotoUrl(html, slug, eventContext) {
       outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
     }
   }
-  if (validCandidates.length === 0) {
+  if (validCandidates.length === 0 && extractOptions.includeOverlayFallback) {
     const overlayStart = Date.now();
     try {
       const overlayResult = normalizeStrategyResult(
@@ -3086,16 +3109,19 @@ async function enrichOne(person, context) {
     return { status: 'error', error: 'login_wall', fatal: true };
   }
   debugEvent('parse.snapshot', Object.assign({}, eventBase, { ms: null, status: 'ok', rejectReason: null }));
-  const extraction = await extractPhotoUrl(html, slug, eventBase);
-  const photoUrl =
+  let extraction = await extractPhotoUrl(html, slug, eventBase, {
+    includeOverlayFallback: false,
+    allowRelaxedOwnerAssociation: false,
+  });
+  let photoUrl =
     typeof extraction === 'string'
       ? extraction
       : (extraction && typeof extraction.url === 'string' ? extraction.url : null);
-  const extractionRejectReason =
+  let extractionRejectReason =
     extraction && typeof extraction === 'object' && typeof extraction.rejectReason === 'string'
       ? extraction.rejectReason
       : null;
-  const extractionDominantRejectReason =
+  let extractionDominantRejectReason =
     extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
       ? extraction.dominantRejectReason
       : null;
@@ -3113,6 +3139,90 @@ async function enrichOne(person, context) {
       'hostIsMediaLicdn=' + (photoUrl ? /^https:\/\/media\.licdn\.com\//.test(photoUrl) : false),
       'rejectReason=' + (extractionRejectReason || ''),
       'dominantRejectReason=' + (extractionDominantRejectReason || ''),
+    );
+  }
+  if (!photoUrl) {
+    const retryPlan = ['profile_retry', 'overlay', 'relaxed_owner'];
+    const executed = [];
+    const jitterMs = 35 + Math.floor(Math.random() * 70);
+    executed.push('profile_retry');
+    await new Promise(function (resolve) { setTimeout(resolve, jitterMs); });
+    try {
+      const retryFetchStart = Date.now();
+      const retryRes = await fetch(url, { credentials: 'include', redirect: 'follow' });
+      debugEvent('fetch.profile.retry', Object.assign({}, eventBase, {
+        ms: Date.now() - retryFetchStart,
+        status: retryRes.ok ? 'ok' : 'http_error',
+        rejectReason: null,
+      }));
+      if (!isRateLimited(retryRes) && !isLoginWall(retryRes)) {
+        html = await retryRes.text();
+        if (!(/<title>[^<]*(sign[- ]?in|login)[^<]*<\/title>/i.test(html) && /authwall|login/i.test(html))) {
+          extraction = await extractPhotoUrl(html, slug, eventBase, {
+            includeOverlayFallback: false,
+            allowRelaxedOwnerAssociation: false,
+          });
+          photoUrl =
+            typeof extraction === 'string'
+              ? extraction
+              : (extraction && typeof extraction.url === 'string' ? extraction.url : null);
+          extractionRejectReason =
+            extraction && typeof extraction === 'object' && typeof extraction.rejectReason === 'string'
+              ? extraction.rejectReason
+              : null;
+          extractionDominantRejectReason =
+            extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
+              ? extraction.dominantRejectReason
+              : null;
+        }
+      }
+    } catch (retryErr) {
+      if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile retry fetch threw', String(retryErr));
+    }
+    if (!photoUrl) {
+      executed.push('overlay');
+      extraction = await extractPhotoUrl(html, slug, eventBase, {
+        includeOverlayFallback: true,
+        allowRelaxedOwnerAssociation: false,
+      });
+      photoUrl =
+        typeof extraction === 'string'
+          ? extraction
+          : (extraction && typeof extraction.url === 'string' ? extraction.url : null);
+      extractionRejectReason =
+        extraction && typeof extraction === 'object' && typeof extraction.rejectReason === 'string'
+          ? extraction.rejectReason
+          : null;
+      extractionDominantRejectReason =
+        extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
+          ? extraction.dominantRejectReason
+          : null;
+    }
+    if (!photoUrl) {
+      executed.push('relaxed_owner');
+      extraction = await extractPhotoUrl(html, slug, eventBase, {
+        includeOverlayFallback: false,
+        allowRelaxedOwnerAssociation: true,
+        relaxedRequiresSingleOwnerGroup: true,
+      });
+      photoUrl =
+        typeof extraction === 'string'
+          ? extraction
+          : (extraction && typeof extraction.url === 'string' ? extraction.url : null);
+      extractionRejectReason =
+        extraction && typeof extraction === 'object' && typeof extraction.rejectReason === 'string'
+          ? extraction.rejectReason
+          : null;
+      extractionDominantRejectReason =
+        extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
+          ? extraction.dominantRejectReason
+          : null;
+    }
+    console.log(
+      '[reknown-ext] enrichOne retry decision',
+      'retryPlan=' + JSON.stringify(retryPlan),
+      'executed=' + JSON.stringify(executed),
+      'finalDecision=' + (photoUrl ? 'photo_found' : 'no_photo_found'),
     );
   }
   if (!photoUrl) {
