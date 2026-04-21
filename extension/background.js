@@ -332,6 +332,55 @@ async function sleepCancellable(ms, batch) {
   }
 }
 
+function createTypedFetchError(code, message, details) {
+  const err = new Error(message || code || 'fetch_failed');
+  err.code = code || 'fetch_failed';
+  if (details && typeof details === 'object') {
+    for (const key of Object.keys(details)) err[key] = details[key];
+  }
+  return err;
+}
+
+function isFetchTimeoutError(err) {
+  return !!(err && typeof err === 'object' && err.code === 'fetch_timeout');
+}
+
+async function fetchWithTimeout(url, options, controlOptions) {
+  const controls = controlOptions && typeof controlOptions === 'object' ? controlOptions : {};
+  const timeoutMs = Math.max(1, Number(controls.timeoutMs) || 15000);
+  const batch = controls.batch && typeof controls.batch === 'object' ? controls.batch : null;
+  const controller = new AbortController();
+  const mergedOptions = Object.assign({}, options || {}, { signal: controller.signal });
+  let timeoutTriggered = false;
+  let timerId = null;
+  if (batch && batch.cancelled) {
+    controller.abort();
+    throw createTypedFetchError('fetch_failed', 'batch_cancelled_before_fetch', { isBatchCancelled: true });
+  }
+  timerId = setTimeout(() => {
+    timeoutTriggered = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    if (batch && batch.cancelled) {
+      controller.abort();
+      throw createTypedFetchError('fetch_failed', 'batch_cancelled_before_fetch', { isBatchCancelled: true });
+    }
+    return await fetch(url, mergedOptions);
+  } catch (err) {
+    const abortErr = err && (err.name === 'AbortError' || err.code === 20);
+    if (timeoutTriggered && abortErr) {
+      throw createTypedFetchError('fetch_timeout', 'fetch timed out', { timeoutMs: timeoutMs });
+    }
+    if (batch && batch.cancelled && abortErr) {
+      throw createTypedFetchError('fetch_failed', 'batch_cancelled_during_fetch', { isBatchCancelled: true });
+    }
+    throw err;
+  } finally {
+    if (timerId) clearTimeout(timerId);
+  }
+}
+
 function sendToTab(tabId, message) {
   try {
     browserApi.tabs.sendMessage(tabId, message, () => {
@@ -1952,7 +2001,8 @@ function extractFromLicdnRegex(html, slug) {
   return null;
 }
 
-async function extractFromOverlayPhoto(slug) {
+async function extractFromOverlayPhoto(slug, options) {
+  const overlayOptions = options && typeof options === 'object' ? options : {};
   if (!slug) {
     if (DEBUG_VERBOSE) {
       console.log('[reknown-ext] overlay-photo: reject reason', 'missing_slug');
@@ -1963,17 +2013,22 @@ async function extractFromOverlayPhoto(slug) {
   let response;
   const fetchStart = Date.now();
   try {
-    response = await fetch(overlayUrl, {
-      credentials: 'include',
-      redirect: 'follow',
-      referrer: 'https://www.linkedin.com/',
-      referrerPolicy: 'strict-origin-when-cross-origin',
-    });
+    response = await fetchWithTimeout(
+      overlayUrl,
+      {
+        credentials: 'include',
+        redirect: 'follow',
+        referrer: 'https://www.linkedin.com/',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      { timeoutMs: overlayOptions.timeoutMs, batch: overlayOptions.batch },
+    );
   } catch (err) {
+    const rejectReason = isFetchTimeoutError(err) ? 'overlay_fetch_timeout' : 'overlay_fetch_failed';
     if (DEBUG_VERBOSE) {
-      console.warn('[reknown-ext] overlay-photo: reject reason', 'fetch_failed', String(err));
+      console.warn('[reknown-ext] overlay-photo: reject reason', rejectReason, String(err));
     }
-    return { url: null, rejectReason: 'overlay_fetch_failed' };
+    return { url: null, rejectReason: rejectReason };
   }
   let overlayHtml = '';
   try {
@@ -2387,6 +2442,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       includeOverlayFallback: true,
       allowRelaxedOwnerAssociation: true,
       relaxedRequiresSingleOwnerGroup: false,
+      network: null,
     },
     options || {},
   );
@@ -2677,7 +2733,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     const overlayStart = Date.now();
     try {
       const overlayResult = normalizeStrategyResult(
-        await extractFromOverlayPhoto(slug),
+        await extractFromOverlayPhoto(slug, extractOptions.network),
         'overlay-photo',
         slug,
         'overlay-photo-img',
@@ -3151,6 +3207,9 @@ async function enrichOne(person, context) {
     eventBase.batchStats = context.batchStats;
   }
   const traceId = context && context.traceId ? String(context.traceId) : null;
+  const batchRef = context && context.batch && typeof context.batch === 'object' ? context.batch : null;
+  const profileFetchTimeoutMs = 15000;
+  const photoFetchTimeoutMs = 20000;
   const mutableState =
     context && context.mutableState && typeof context.mutableState === 'object'
       ? context.mutableState
@@ -3215,11 +3274,16 @@ async function enrichOne(person, context) {
   const fetchStart = Date.now();
   let pageRes;
   try {
-    pageRes = await fetch(url, { credentials: 'include', redirect: 'follow' });
+    pageRes = await fetchWithTimeout(
+      url,
+      { credentials: 'include', redirect: 'follow' },
+      { timeoutMs: profileFetchTimeoutMs, batch: batchRef },
+    );
   } catch (err) {
+    const rejectReason = isFetchTimeoutError(err) ? 'fetch_timeout' : 'fetch_failed';
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile fetch threw', String(err), 'url=' + url);
-    debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: 'error', rejectReason: 'fetch_failed' }));
-    return finalizeResult({ status: 'error', error: 'fetch_failed' });
+    debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: 'error', rejectReason: rejectReason }));
+    return finalizeResult({ status: 'error', error: rejectReason });
   }
   debugEvent('fetch.profile', Object.assign({}, eventBase, { ms: Date.now() - fetchStart, status: pageRes.ok ? 'ok' : 'http_error', rejectReason: null }));
   if (DEBUG_VERBOSE) {
@@ -3362,7 +3426,11 @@ async function enrichOne(person, context) {
     await new Promise(function (resolve) { setTimeout(resolve, jitterMs); });
     try {
       const retryFetchStart = Date.now();
-      const retryRes = await fetch(url, { credentials: 'include', redirect: 'follow' });
+      const retryRes = await fetchWithTimeout(
+        url,
+        { credentials: 'include', redirect: 'follow' },
+        { timeoutMs: profileFetchTimeoutMs, batch: batchRef },
+      );
       debugEvent('fetch.profile.retry', Object.assign({}, eventBase, {
         ms: Date.now() - retryFetchStart,
         status: retryRes.ok ? 'ok' : 'http_error',
@@ -3391,12 +3459,18 @@ async function enrichOne(person, context) {
       }
     } catch (retryErr) {
       if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile retry fetch threw', String(retryErr));
+      debugEvent('fetch.profile.retry', Object.assign({}, eventBase, {
+        ms: null,
+        status: 'error',
+        rejectReason: isFetchTimeoutError(retryErr) ? 'fetch_timeout' : 'fetch_failed',
+      }));
     }
     if (!photoUrl) {
       executed.push('overlay');
       extraction = await extractPhotoUrl(html, slug, eventBase, {
         includeOverlayFallback: true,
         allowRelaxedOwnerAssociation: false,
+        network: { timeoutMs: profileFetchTimeoutMs, batch: batchRef },
       });
       photoUrl =
         typeof extraction === 'string'
@@ -3478,15 +3552,20 @@ async function enrichOne(person, context) {
   const photoFetchStart = Date.now();
   let imgRes;
   try {
-    imgRes = await fetch(photoUrl, {
-      credentials: 'include',
-      referrer: 'https://www.linkedin.com/',
-      referrerPolicy: 'strict-origin-when-cross-origin',
-    });
+    imgRes = await fetchWithTimeout(
+      photoUrl,
+      {
+        credentials: 'include',
+        referrer: 'https://www.linkedin.com/',
+        referrerPolicy: 'strict-origin-when-cross-origin',
+      },
+      { timeoutMs: photoFetchTimeoutMs, batch: batchRef },
+    );
   } catch (err) {
+    const rejectReason = isFetchTimeoutError(err) ? 'fetch_timeout' : 'fetch_failed';
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo fetch threw', String(err));
-    debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: 'error', rejectReason: 'fetch_failed' }));
-    return finalizeResult({ status: 'error', error: 'fetch_failed' });
+    debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: 'error', rejectReason: rejectReason }));
+    return finalizeResult({ status: 'error', error: rejectReason });
   }
   debugEvent('fetch.photo', Object.assign({}, eventBase, {
     ms: Date.now() - photoFetchStart,
@@ -3741,6 +3820,7 @@ async function runBatch(requestId, people, tabId) {
           traceId: traceId,
           mutableState: enrichMutableState,
           batchStats,
+          batch,
         });
       } catch (err) {
         console.error('[reknown-ext] unexpected error', err);
