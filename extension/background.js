@@ -1449,15 +1449,23 @@ function extractFromLicdnRegex(html, slug) {
     };
   });
   const synthesizedCandidates = [];
+  let rootUrlCount = 0;
+  let artifactSegmentCount = 0;
+  let truncatedRootOnlyCount = 0;
   for (let ri = 0; ri < objectRanges.length; ri++) {
     const range = objectRanges[ri];
     const objectText = decoded.substring(range.start, range.end + 1);
     const rootMatches = [...objectText.matchAll(
       /"rootUrl"\s*:\s*"(https:\/\/media\.licdn\.com\/dms\/image\/[^"]*profile-displayphoto-shrink_[^"]*)"/g,
     )];
-    if (rootMatches.length === 0) continue;
     const segMatches = [...objectText.matchAll(/"fileIdentifyingUrlPathSegment"\s*:\s*"([^"]+)"/g)];
-    if (segMatches.length === 0) continue;
+    rootUrlCount += rootMatches.length;
+    artifactSegmentCount += segMatches.length;
+    if (rootMatches.length === 0) continue;
+    if (segMatches.length === 0) {
+      truncatedRootOnlyCount += rootMatches.length;
+      continue;
+    }
     const binding = extractObjectOwnerBinding(objectText, slug);
     for (let rmi = 0; rmi < rootMatches.length; rmi++) {
       const rootUrl = rootMatches[rmi][1];
@@ -1473,6 +1481,11 @@ function extractFromLicdnRegex(html, slug) {
         if (width > 0 && height > 0) score += Math.min(12, Math.floor((width * height) / 10000));
         if (hasSig) score += 16;
         if (hasExpiry) score += 8;
+        if (slug && binding.ownerPublicIdentifier) {
+          if (binding.ownerPublicIdentifier.toLowerCase() === slug.toLowerCase()) score += 24;
+          else score -= 24;
+        }
+        if (binding.ownerIsViewer) score -= 6;
         synthesizedCandidates.push({
           url: fullUrl,
           width: width,
@@ -1518,8 +1531,11 @@ function extractFromLicdnRegex(html, slug) {
     }).length;
     console.log(
       '[reknown-ext] licdn-regex: synthesized candidates',
+      'rootUrlCount=' + rootUrlCount,
+      'artifactSegmentCount=' + artifactSegmentCount,
       'synthesizedCandidateCount=' + synthesizedCandidates.length,
       'signedSynthesizedCount=' + signedSynthesizedCount,
+      'truncatedRootOnlyCount=' + truncatedRootOnlyCount,
     );
     // For each match, log the 40 chars AFTER the match end so we can see
     // exactly what character terminated the regex body — this is the
