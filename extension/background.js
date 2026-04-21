@@ -3132,12 +3132,16 @@ async function computeBlobSha256Prefix(blob, prefixLen) {
 
 function compactNoPhotoFoundBundle(html, slug, extraction) {
   const decoded = normalizeLinkedInHtml(html || '', 'no-photo-bundle');
+  const targetSlug = typeof slug === 'string' ? slug.toLowerCase() : '';
   const tokenCounts = {
     publicIdentifier: countOccurrences(decoded, 'publicIdentifier'),
     rootUrl: countOccurrences(decoded, 'rootUrl'),
     fileIdentifyingUrlPathSegment: countOccurrences(decoded, 'fileIdentifyingUrlPathSegment'),
     profileDisplayphoto: countOccurrences(decoded, 'profile-displayphoto'),
   };
+  const targetPublicIdentifierHits = targetSlug
+    ? countRegex(decoded, new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(targetSlug) + '"', 'gi'))
+    : 0;
   const candidateRegex = /https:\/\/media\.licdn\.com\/dms\/image\/[^"'\\\s<>]*profile-displayphoto(?:-shrink)?[^"'\\\s<>]*/g;
   const ownerCounts = new Map();
   const snippets = [];
@@ -3183,6 +3187,7 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
       hash32: stableHash32(decoded),
     },
     tokenCounts: tokenCounts,
+    targetPublicIdentifierHits: targetPublicIdentifierHits,
     topOwnerIdentifiers: topOwners,
     maskedCandidateUrls: maskedUrls.filter(Boolean),
     rejectedMatchSnippets: snippets.slice(0, 3),
@@ -3225,6 +3230,7 @@ async function enrichOne(person, context) {
   // extractPhotoUrl to disambiguate the target's photo from the viewer's
   // own nav/menu photo when LinkedIn serves HTML containing both.
   const slug = getLinkedInSlugFromProfileUrl(url);
+  const expectedProfilePath = slug ? '/in/' + slug.toLowerCase() : '';
   const eventBase = {
     requestId: requestIdForDebug || null,
     personId: person && person.id ? String(person.id) : null,
@@ -3373,6 +3379,8 @@ async function enrichOne(person, context) {
       'type=' + pageRes.type,
       'ok=' + pageRes.ok,
       'finalUrl=' + (pageRes.url || '').substring(0, 160),
+      'expectedProfilePath=' + expectedProfilePath,
+      'finalUrlContainsExpectedPath=' + (expectedProfilePath ? String(pageRes.url || '').toLowerCase().includes(expectedProfilePath) : false),
       'finalStillProfile=' + LINKEDIN_PROFILE_RE.test(pageRes.url || ''),
       'headers=' + JSON.stringify(pageHdrs),
     );
@@ -3417,10 +3425,22 @@ async function enrichOne(person, context) {
       entityHex3D: /&#x3[dD];/.test(html),
       unicodeU003D: html.includes('\\u003d'),
       bsQuotes: html.includes('\\"'),
+      targetPublicIdentifierHits:
+        slug && slug.length > 0
+          ? countRegex(
+              html,
+              new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(slug) + '"', 'gi'),
+            )
+          : 0,
+      finalUrlContainsExpectedPath:
+        expectedProfilePath.length > 0
+          ? String(pageRes.url || '').toLowerCase().includes(expectedProfilePath)
+          : false,
     };
     console.log(
       '[reknown-ext] page fetched status=' + pageRes.status,
       'finalUrl=' + (pageRes.url || '').substring(0, 120),
+      'expectedProfilePath=' + expectedProfilePath,
       'htmlLen=' + html.length,
       'contentType=' + (pageRes.headers.get('content-type') || ''),
       'fingerprint=' + fingerprint,
@@ -3607,6 +3627,13 @@ async function enrichOne(person, context) {
     console.warn(
       '[reknown-ext] no_photo_found compact bundle',
       JSON.stringify(Object.assign({}, compactBundle, {
+        requestedProfileUrl: url.substring(0, 160),
+        fetchedFinalUrl: String(pageRes && pageRes.url ? pageRes.url : '').substring(0, 160),
+        expectedProfilePath: expectedProfilePath,
+        finalUrlContainsExpectedPath:
+          expectedProfilePath.length > 0
+            ? String(pageRes && pageRes.url ? pageRes.url : '').toLowerCase().includes(expectedProfilePath)
+            : false,
         rejectReason: extractionRejectReason || extractionDominantRejectReason || 'no_photo_found',
       })),
     );

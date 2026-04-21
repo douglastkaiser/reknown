@@ -168,6 +168,14 @@
         console.warn('[reknown-ext] content->bg sendMessage threw', err);
       }
       if (type === 'REKNOWN_ENRICH_CANCEL') {
+        console.warn(
+          '[reknown-ext] REKNOWN_ENRICH_CANCEL received in content-script',
+          'requestId=' + requestId,
+          'origin=' + event.origin,
+          'href=' + window.location.href,
+          'keepAliveOpen=' + keepAlivePorts.has(requestId),
+          'openPorts=' + Array.from(keepAlivePorts.keys()).join(','),
+        );
         if (!keepAlivePorts.has(requestId)) {
           console.warn(
             '[reknown-ext] REKNOWN_ENRICH_CANCEL for unknown requestId — no open keep-alive port',
