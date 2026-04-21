@@ -2398,14 +2398,6 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
   const makeFailure = function (reason, extra) {
     return Object.assign({ url: null, rejectReason: reason || null }, extra || {});
   };
-  const getUrlHost = function (url) {
-    if (!url || typeof url !== 'string') return '';
-    try {
-      return (new URL(url)).hostname.toLowerCase();
-    } catch (_err) {
-      return '';
-    }
-  };
   const hasSignatureFields = function (url) {
     return !!url && (url.includes('&v=') && url.includes('&t='));
   };
@@ -2559,6 +2551,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     ['licdn-regex', extractFromLicdnRegex, 'licdn-root+artifact'],
   ];
   const outcomes = [];
+  const allCandidates = [];
   const validCandidates = [];
   for (const [name, fn, defaultSource] of strategies) {
     const t0 = Date.now();
@@ -2591,6 +2584,11 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           ms: dt,
           status: url ? 'ok' : 'empty',
           rejectReason: result.rejectReason || null,
+          candidateUrl: url ? redactAndStripUrl(url) : null,
+          candidateHost: url ? getUrlHost(url) : null,
+          candidatePathTail: url ? getUrlPathTail(url) : null,
+          candidateSource: name,
+          confidenceScore: null,
         });
       }
       if (!url) {
@@ -2634,6 +2632,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       candidate.rejectReason = getDominantCandidateRejectCode(candidate);
 
       const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
+      allCandidates.push(candidate);
       outcomes.push({
         strategy: name,
         result: accepted ? 'candidate-accepted' : 'candidate-rejected',
@@ -2649,6 +2648,22 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         ms: dt,
       });
       if (accepted) validCandidates.push(candidate);
+      if (stageByStrategy[name]) {
+        debugEvent(stageByStrategy[name], {
+          requestId: eventContext && eventContext.requestId,
+          personId: eventContext && eventContext.personId,
+          slug: slug || null,
+          strategy: name,
+          ms: dt,
+          status: accepted ? 'candidate-accepted' : 'candidate-rejected',
+          rejectReason: accepted ? null : candidate.rejectReason,
+          candidateUrl: redactAndStripUrl(candidate.url),
+          candidateHost: getUrlHost(candidate.url),
+          candidatePathTail: getUrlPathTail(candidate.url),
+          candidateSource: name,
+          confidenceScore: candidate.confidence,
+        });
+      }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
       outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
@@ -2673,6 +2688,11 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         ms: dt,
         status: overlayUrl ? 'ok' : 'empty',
         rejectReason: overlayResult.rejectReason || null,
+        candidateUrl: overlayUrl ? redactAndStripUrl(overlayUrl) : null,
+        candidateHost: overlayUrl ? getUrlHost(overlayUrl) : null,
+        candidatePathTail: overlayUrl ? getUrlPathTail(overlayUrl) : null,
+        candidateSource: 'overlay-photo',
+        confidenceScore: null,
       });
       if (!overlayUrl) {
         outcomes.push({
@@ -2717,6 +2737,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         candidate.rejectReasons = getCandidateRejectCodes(candidate);
         candidate.rejectReason = getDominantCandidateRejectCode(candidate);
         const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
+        allCandidates.push(candidate);
         outcomes.push({
           strategy: 'overlay-photo',
           result: accepted ? 'candidate-accepted' : 'candidate-rejected',
@@ -2732,6 +2753,20 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           ms: dt,
         });
         if (accepted) validCandidates.push(candidate);
+        debugEvent('extract.overlay', {
+          requestId: eventContext && eventContext.requestId,
+          personId: eventContext && eventContext.personId,
+          slug: slug || null,
+          strategy: 'overlay-photo',
+          ms: dt,
+          status: accepted ? 'candidate-accepted' : 'candidate-rejected',
+          rejectReason: accepted ? null : candidate.rejectReason,
+          candidateUrl: redactAndStripUrl(candidate.url),
+          candidateHost: getUrlHost(candidate.url),
+          candidatePathTail: getUrlPathTail(candidate.url),
+          candidateSource: 'overlay-photo',
+          confidenceScore: candidate.confidence,
+        });
       }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', 'overlay-photo', err);
@@ -2777,6 +2812,18 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     ms: null,
     status: winner ? 'selected' : 'none',
     rejectReason: winner ? (winner.rejectReason || null) : (chooseDominantRejectReason(outcomes) || null),
+    candidateCount: allCandidates.length,
+    topCandidates: allCandidates
+      .slice()
+      .sort(function (a, b) { return b.confidence - a.confidence; })
+      .slice(0, 3)
+      .map(function (c) {
+        return {
+          score: c.confidence,
+          rejectReasons: c.rejectReasons,
+          normalizedUrlFingerprint: getNormalizedUrlFingerprint(c.url),
+        };
+      }),
   });
   if (winner) {
     return {
@@ -2894,6 +2941,64 @@ function summarizeCandidateUrl(url) {
       t: /[?&]t=/.test(url),
     },
   };
+}
+
+function redactAndStripUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const parsed = new URL(url);
+    parsed.search = '';
+    parsed.hash = '';
+    return maskSensitiveUrlBits(parsed.toString());
+  } catch (_err) {
+    const cleaned = String(url).split('#')[0].split('?')[0];
+    return maskSensitiveUrlBits(cleaned);
+  }
+}
+
+function getUrlHost(url) {
+  if (!url || typeof url !== 'string') return '';
+  try {
+    return (new URL(url)).hostname.toLowerCase();
+  } catch (_err) {
+    return '';
+  }
+}
+
+function getUrlPathTail(url) {
+  if (!url || typeof url !== 'string') return '';
+  try {
+    const path = (new URL(url)).pathname || '';
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length === 0) return '';
+    return parts.slice(-2).join('/');
+  } catch (_err) {
+    return '';
+  }
+}
+
+function getNormalizedUrlFingerprint(url) {
+  const redacted = redactAndStripUrl(url);
+  if (!redacted) return null;
+  return stableHash32(redacted.toLowerCase());
+}
+
+async function computeBlobSha256Prefix(blob, prefixLen) {
+  const len = Math.max(8, Math.min(12, prefixLen || 10));
+  try {
+    if (!blob || typeof blob.arrayBuffer !== 'function' || !globalThis.crypto || !globalThis.crypto.subtle) return null;
+    const buffer = await blob.arrayBuffer();
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
+    const bytes = new Uint8Array(digest);
+    let hex = '';
+    for (let i = 0; i < bytes.length; i++) {
+      hex += bytes[i].toString(16).padStart(2, '0');
+      if (hex.length >= len) break;
+    }
+    return hex.substring(0, len);
+  } catch (_err) {
+    return null;
+  }
 }
 
 function compactNoPhotoFoundBundle(html, slug, extraction) {
@@ -3238,6 +3343,11 @@ async function enrichOne(person, context) {
       ms: null,
       status: 'error',
       rejectReason: extractionRejectReason || extractionDominantRejectReason || 'no_photo_found',
+      photoSha256Prefix: null,
+      photoByteLength: null,
+      requestId: eventBase.requestId,
+      personId: eventBase.personId,
+      slug: eventBase.slug,
     }));
     return {
       status: 'error',
@@ -3267,7 +3377,15 @@ async function enrichOne(person, context) {
     debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: 'error', rejectReason: 'fetch_failed' }));
     return { status: 'error', error: 'fetch_failed' };
   }
-  debugEvent('fetch.photo', Object.assign({}, eventBase, { ms: Date.now() - photoFetchStart, status: imgRes.ok ? 'ok' : 'http_error', rejectReason: null }));
+  debugEvent('fetch.photo', Object.assign({}, eventBase, {
+    ms: Date.now() - photoFetchStart,
+    status: imgRes.ok ? 'ok' : 'http_error',
+    rejectReason: null,
+    finalFetchUrl: redactAndStripUrl(imgRes.url || photoUrl),
+    httpStatus: imgRes.status,
+    contentType: imgRes.headers.get('content-type') || null,
+    bytesDownloaded: null,
+  }));
   if (DEBUG_VERBOSE) {
     const hdrs = {};
     for (const key of ['content-type', 'content-length', 'server', 'x-li-fabric', 'x-li-pop', 'x-cache', 'cf-ray']) {
@@ -3293,7 +3411,16 @@ async function enrichOne(person, context) {
         console.warn('[reknown-ext] photo fetch error body (first 300):', errBody.substring(0, 300));
       } catch { /* ignore body read failure */ }
     }
-    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
+    debugEvent('result', Object.assign({}, eventBase, {
+      ms: null,
+      status: 'error',
+      rejectReason: 'fetch_failed',
+      photoSha256Prefix: null,
+      photoByteLength: null,
+      requestId: eventBase.requestId,
+      personId: eventBase.personId,
+      slug: eventBase.slug,
+    }));
     return { status: 'error', error: 'fetch_failed' };
   }
   let blob;
@@ -3301,7 +3428,16 @@ async function enrichOne(person, context) {
     blob = await imgRes.blob();
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] photo blob read threw', String(err));
-    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
+    debugEvent('result', Object.assign({}, eventBase, {
+      ms: null,
+      status: 'error',
+      rejectReason: 'fetch_failed',
+      photoSha256Prefix: null,
+      photoByteLength: null,
+      requestId: eventBase.requestId,
+      personId: eventBase.personId,
+      slug: eventBase.slug,
+    }));
     return { status: 'error', error: 'fetch_failed' };
   }
   if (DEBUG_VERBOSE) {
@@ -3312,7 +3448,17 @@ async function enrichOne(person, context) {
       'suspiciouslySmall=' + (blob.size < 1024),
     );
   }
+  debugEvent('fetch.photo', Object.assign({}, eventBase, {
+    ms: Date.now() - photoFetchStart,
+    status: 'complete',
+    rejectReason: null,
+    finalFetchUrl: redactAndStripUrl(imgRes.url || photoUrl),
+    httpStatus: imgRes.status,
+    contentType: imgRes.headers.get('content-type') || blob.type || null,
+    bytesDownloaded: blob.size,
+  }));
   try {
+    const photoSha256Prefix = await computeBlobSha256Prefix(blob, 12);
     const dataUrl = await resizeBlob(blob);
     if (DEBUG_VERBOSE) {
       // Message-passing to the tab has a size cap; huge data URLs can be
@@ -3331,11 +3477,29 @@ async function enrichOne(person, context) {
     // app can persist it on the person. Having the original URL stored
     // means the "Edit person" form has something to show in the Photo URL
     // field instead of appearing blank after a successful enrichment.
-    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'success', rejectReason: null }));
+    debugEvent('result', Object.assign({}, eventBase, {
+      ms: null,
+      status: 'success',
+      rejectReason: null,
+      photoSha256Prefix: photoSha256Prefix,
+      photoByteLength: blob.size,
+      requestId: eventBase.requestId,
+      personId: eventBase.personId,
+      slug: eventBase.slug,
+    }));
     return { status: 'success', photoDataUrl: dataUrl, photoUrl: photoUrl };
   } catch (err) {
     if (DEBUG_VERBOSE) console.warn('[reknown-ext] resize threw', String(err));
-    debugEvent('result', Object.assign({}, eventBase, { ms: null, status: 'error', rejectReason: 'fetch_failed' }));
+    debugEvent('result', Object.assign({}, eventBase, {
+      ms: null,
+      status: 'error',
+      rejectReason: 'fetch_failed',
+      photoSha256Prefix: null,
+      photoByteLength: blob && typeof blob.size === 'number' ? blob.size : null,
+      requestId: eventBase.requestId,
+      personId: eventBase.personId,
+      slug: eventBase.slug,
+    }));
     return { status: 'error', error: 'fetch_failed' };
   }
 }
