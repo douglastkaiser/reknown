@@ -408,6 +408,10 @@ function emitBatchSummaryLog(args) {
   const data = args && typeof args === 'object' ? args : {};
   const failuresByCode =
     data.failuresByCode && typeof data.failuresByCode === 'object' ? data.failuresByCode : {};
+  const failuresByDominantRejectReason =
+    data.failuresByDominantRejectReason && typeof data.failuresByDominantRejectReason === 'object'
+      ? data.failuresByDominantRejectReason
+      : {};
   const fetchDurationsMs = Array.isArray(data.fetchDurationsMs) ? data.fetchDurationsMs : [];
   const payload = {
     requestId: data.requestId || null,
@@ -417,6 +421,7 @@ function emitBatchSummaryLog(args) {
     success: Number(data.success) || 0,
     failed: Number(data.failed) || 0,
     failuresByCode: failuresByCode,
+    failuresByDominantRejectReason: failuresByDominantRejectReason,
     fetchTimingMs: {
       p50: getPercentile(fetchDurationsMs, 50),
       p95: getPercentile(fetchDurationsMs, 95),
@@ -426,6 +431,39 @@ function emitBatchSummaryLog(args) {
     browser: getBrowserInfoString(),
   };
   console.log('[reknown-ext] batch.summary.stats ' + JSON.stringify(payload));
+}
+
+function normalizeRejectOwnerMismatch(reason) {
+  if (!reason || typeof reason !== 'string') return null;
+  if (/reject\.owner_mismatch|owner_mismatch|owner_proximity_reject/i.test(reason)) {
+    return 'reject.owner_mismatch';
+  }
+  return reason;
+}
+
+function getProgressErrorMeta(error) {
+  if (typeof error === 'string') {
+    return { errorCode: error, dominantRejectReason: null };
+  }
+  if (!error || typeof error !== 'object') {
+    return { errorCode: 'unknown_error', dominantRejectReason: null };
+  }
+  const baseCode = typeof error.code === 'string' ? error.code : 'unknown_error';
+  const rawDominantRejectReason =
+    typeof error.dominantRejectReason === 'string'
+      ? error.dominantRejectReason
+      : (typeof error.reason === 'string' ? error.reason : null);
+  const normalizedDominantRejectReason = normalizeRejectOwnerMismatch(rawDominantRejectReason);
+  if (baseCode === 'no_photo_found' && normalizedDominantRejectReason === 'reject.owner_mismatch') {
+    return {
+      errorCode: 'reject.owner_mismatch',
+      dominantRejectReason: normalizedDominantRejectReason,
+    };
+  }
+  return {
+    errorCode: baseCode,
+    dominantRejectReason: normalizedDominantRejectReason,
+  };
 }
 
 ensureStartupHealthProbe().catch((err) => {
@@ -4245,6 +4283,7 @@ async function runBatch(requestId, people, tabId) {
   let success = 0;
   let failed = 0;
   const failuresByCode = {};
+  const failuresByDominantRejectReason = {};
   const fetchDurationsMs = [];
   let firstFailureTimestamp = null;
   try {
@@ -4377,11 +4416,13 @@ async function runBatch(requestId, people, tabId) {
         logStageBoundary(personStageContext, 'result.emitted', personStart);
       } else {
         failed++;
-        const progressErrorCode =
-          result && result.error && typeof result.error === 'object' && typeof result.error.code === 'string'
-            ? result.error.code
-            : (typeof result.error === 'string' ? result.error : 'unknown_error');
+        const progressErrorMeta = getProgressErrorMeta(result ? result.error : null);
+        const progressErrorCode = progressErrorMeta.errorCode;
         failuresByCode[progressErrorCode] = (failuresByCode[progressErrorCode] || 0) + 1;
+        if (progressErrorMeta.dominantRejectReason) {
+          failuresByDominantRejectReason[progressErrorMeta.dominantRejectReason] =
+            (failuresByDominantRejectReason[progressErrorMeta.dominantRejectReason] || 0) + 1;
+        }
         if (!firstFailureTimestamp) firstFailureTimestamp = new Date().toISOString();
         const errorSelectedUrlFingerprint =
           enrichMutableState.selectedCandidate &&
@@ -4427,6 +4468,8 @@ async function runBatch(requestId, people, tabId) {
               failed,
               processed: i + 1,
               lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
+              failuresByCode: failuresByCode,
+              failuresByDominantRejectReason: failuresByDominantRejectReason,
             },
           });
           debugEvent('batch.summary', {
@@ -4442,6 +4485,7 @@ async function runBatch(requestId, people, tabId) {
             success: success,
             failed: failed,
             failuresByCode: failuresByCode,
+            failuresByDominantRejectReason: failuresByDominantRejectReason,
             fetchDurationsMs: fetchDurationsMs,
             firstFailureTimestamp: firstFailureTimestamp,
           });
@@ -4457,6 +4501,7 @@ async function runBatch(requestId, people, tabId) {
           success: success,
           failed: failed,
           failuresByCode: failuresByCode,
+          failuresByDominantRejectReason: failuresByDominantRejectReason,
           fetchDurationsMs: fetchDurationsMs,
           firstFailureTimestamp: firstFailureTimestamp,
         });
@@ -4504,6 +4549,8 @@ async function runBatch(requestId, people, tabId) {
         failed,
         processed: success + failed,
         lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
+        failuresByCode: failuresByCode,
+        failuresByDominantRejectReason: failuresByDominantRejectReason,
       },
     });
     debugEvent('batch.summary', {
@@ -4519,6 +4566,7 @@ async function runBatch(requestId, people, tabId) {
       success: success,
       failed: failed,
       failuresByCode: failuresByCode,
+      failuresByDominantRejectReason: failuresByDominantRejectReason,
       fetchDurationsMs: fetchDurationsMs,
       firstFailureTimestamp: firstFailureTimestamp,
     });

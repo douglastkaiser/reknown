@@ -15,7 +15,8 @@ export type EnrichErrorCode =
   | 'parse_error'
   | 'login_wall'
   | 'rate_limited'
-  | 'batch_already_running';
+  | 'batch_already_running'
+  | 'reject.owner_mismatch';
 
 export interface EnrichCooldown {
   cooldownUntil?: number | null;
