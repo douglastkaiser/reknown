@@ -2875,6 +2875,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         source: winner.source,
         decisionStatus: decisionStatus,
         warning: decisionStatus === 'accepted_fallback_low_confidence',
+        selectedUrlFingerprint: getNormalizedUrlFingerprint(winner.url),
       },
       rejectReason: winner.rejectReason || null,
       dominantRejectReason: null,
@@ -3027,6 +3028,12 @@ function getNormalizedUrlFingerprint(url) {
   return stableHash32(redacted.toLowerCase());
 }
 
+function getLinkedInSlugFromProfileUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  const slugMatch = trimmed.match(/\/in\/([^\s/?#]+)/i);
+  return slugMatch ? decodeURIComponent(slugMatch[1]) : '';
+}
+
 async function computeBlobSha256Prefix(blob, prefixLen) {
   const len = Math.max(8, Math.min(12, prefixLen || 10));
   try {
@@ -3139,8 +3146,7 @@ async function enrichOne(person, context) {
   // publicIdentifier slug from the profile URL path. We use this inside
   // extractPhotoUrl to disambiguate the target's photo from the viewer's
   // own nav/menu photo when LinkedIn serves HTML containing both.
-  const slugMatch = url.match(/\/in\/([^\s/?#]+)/i);
-  const slug = slugMatch ? decodeURIComponent(slugMatch[1]) : '';
+  const slug = getLinkedInSlugFromProfileUrl(url);
   const eventBase = {
     requestId: requestIdForDebug || null,
     personId: person && person.id ? String(person.id) : null,
@@ -3712,6 +3718,13 @@ async function runBatch(requestId, people, tabId) {
       enrichMutableState.photoBlob = null;
       enrichMutableState.photoHash = null;
       enrichMutableState.previousPersonId = personIdForTrace;
+      const immutableProgressMeta = {
+        intendedPersonId: person && person.id ? String(person.id) : null,
+        slug: getLinkedInSlugFromProfileUrl(person && person.linkedinUrl),
+        photoSha256Prefix: null,
+        photoDataUrlLen: 0,
+        selectedUrlFingerprint: null,
+      };
       sendToTab(tabId, {
         type: 'REKNOWN_ENRICH_PROGRESS',
         requestId,
@@ -3720,6 +3733,11 @@ async function runBatch(requestId, people, tabId) {
         status: 'started',
         index: i,
         total: people.length,
+        intendedPersonId: immutableProgressMeta.intendedPersonId,
+        slug: immutableProgressMeta.slug,
+        photoSha256Prefix: immutableProgressMeta.photoSha256Prefix,
+        photoDataUrlLen: immutableProgressMeta.photoDataUrlLen,
+        selectedUrlFingerprint: immutableProgressMeta.selectedUrlFingerprint,
       });
       let result;
       try {
@@ -3746,6 +3764,18 @@ async function runBatch(requestId, people, tabId) {
       if (batch.cancelled) break;
       if (result.status === 'success') {
         success++;
+        const successDataUrlLen =
+          result && typeof result.photoDataUrl === 'string' ? result.photoDataUrl.length : 0;
+        const successPhotoSha256Prefix =
+          enrichMutableState.photoHash && typeof enrichMutableState.photoHash === 'string'
+            ? enrichMutableState.photoHash
+            : null;
+        const successSelectedUrlFingerprint =
+          enrichMutableState.selectedCandidate &&
+          typeof enrichMutableState.selectedCandidate === 'object' &&
+          typeof enrichMutableState.selectedCandidate.selectedUrlFingerprint === 'string'
+            ? enrichMutableState.selectedCandidate.selectedUrlFingerprint
+            : null;
         sendToTab(tabId, {
           type: 'REKNOWN_ENRICH_PROGRESS',
           requestId,
@@ -3756,9 +3786,20 @@ async function runBatch(requestId, people, tabId) {
           photoUrl: result.photoUrl,
           index: i,
           total: people.length,
+          intendedPersonId: person && person.id ? String(person.id) : null,
+          slug: getLinkedInSlugFromProfileUrl(person && person.linkedinUrl),
+          photoSha256Prefix: successPhotoSha256Prefix,
+          photoDataUrlLen: successDataUrlLen,
+          selectedUrlFingerprint: successSelectedUrlFingerprint,
         });
       } else {
         failed++;
+        const errorSelectedUrlFingerprint =
+          enrichMutableState.selectedCandidate &&
+          typeof enrichMutableState.selectedCandidate === 'object' &&
+          typeof enrichMutableState.selectedCandidate.selectedUrlFingerprint === 'string'
+            ? enrichMutableState.selectedCandidate.selectedUrlFingerprint
+            : null;
         sendToTab(tabId, {
           type: 'REKNOWN_ENRICH_PROGRESS',
           requestId,
@@ -3768,6 +3809,11 @@ async function runBatch(requestId, people, tabId) {
           error: result.error,
           index: i,
           total: people.length,
+          intendedPersonId: person && person.id ? String(person.id) : null,
+          slug: getLinkedInSlugFromProfileUrl(person && person.linkedinUrl),
+          photoSha256Prefix: null,
+          photoDataUrlLen: 0,
+          selectedUrlFingerprint: errorSelectedUrlFingerprint,
         });
         if (result.fatal) {
           const cooldownMeta =
@@ -3814,6 +3860,12 @@ async function runBatch(requestId, people, tabId) {
             total: people.length,
             pauseMs: throttleCfg.batchPauseMs,
             profile: throttleCfg.profile,
+            intendedPersonId: null,
+            personId: null,
+            slug: null,
+            photoSha256Prefix: null,
+            photoDataUrlLen: 0,
+            selectedUrlFingerprint: null,
           });
           await sleepCancellable(throttleCfg.batchPauseMs, batch);
         }
