@@ -24,6 +24,7 @@ const ERROR_LABELS: Record<EnrichErrorCode, string> = {
   rate_limited: 'Rate limited by LinkedIn',
   batch_already_running: 'Another enrichment batch is already running',
   'reject.owner_mismatch': 'Profile owner mismatch',
+  owner_mismatch_stable: 'Stable owner mismatch (fail-fast)',
 };
 
 function formatEta(seconds: number): string {
