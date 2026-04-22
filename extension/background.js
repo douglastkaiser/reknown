@@ -538,8 +538,8 @@ async function fetchWithTimeout(url, options, controlOptions) {
   const diagnosticContext = controls.diagnosticContext && typeof controls.diagnosticContext === 'object'
     ? controls.diagnosticContext
     : {};
-  const controller = new AbortController();
-  const mergedOptions = Object.assign({}, options || {}, { signal: controller.signal });
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const mergedOptions = Object.assign({}, options || {}, controller ? { signal: controller.signal } : {});
   const requestUrlMeta = getUrlDiagnostics(url);
   let timeoutTriggered = false;
   let timerId = null;
@@ -558,22 +558,22 @@ async function fetchWithTimeout(url, options, controlOptions) {
     diagnosticContext: diagnosticContext,
   });
   if (batch && batch.cancelled) {
-    abortControllerTriggered = true;
+    abortControllerTriggered = !!controller;
     abortReason = 'batch_cancelled_before_fetch';
-    controller.abort();
+    if (controller) controller.abort();
     throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_before_fetch', { isBatchCancelled: true });
   }
   if (externalSignal && externalSignal.aborted) {
-    abortControllerTriggered = true;
+    abortControllerTriggered = !!controller;
     abortReason = 'request_cancelled_before_fetch';
-    controller.abort();
+    if (controller) controller.abort();
     throw createTypedFetchError('fetch_cancelled', 'request_cancelled_before_fetch', { isRequestCancelled: true });
   }
   if (externalSignal) {
     const onExternalAbort = () => {
-      abortControllerTriggered = true;
+      abortControllerTriggered = !!controller;
       abortReason = 'external_abort_signal';
-      controller.abort();
+      if (controller) controller.abort();
     };
     externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     externalAbortCleanup = () => {
@@ -586,15 +586,15 @@ async function fetchWithTimeout(url, options, controlOptions) {
   }
   timerId = setTimeout(() => {
     timeoutTriggered = true;
-    abortControllerTriggered = true;
+    abortControllerTriggered = !!controller;
     abortReason = 'timeout';
-    controller.abort();
+    if (controller) controller.abort();
   }, timeoutMs);
   try {
     if (batch && batch.cancelled) {
-      abortControllerTriggered = true;
+      abortControllerTriggered = !!controller;
       abortReason = 'batch_cancelled_before_fetch';
-      controller.abort();
+      if (controller) controller.abort();
       throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_before_fetch', { isBatchCancelled: true });
     }
     const response = await fetch(url, mergedOptions);
@@ -2732,6 +2732,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       includeOverlayFallback: true,
       allowRelaxedOwnerAssociation: true,
       relaxedRequiresSingleOwnerGroup: false,
+      enableAlternateOwnerLinkingFallback: false,
       network: null,
     },
     options || {},
@@ -2861,6 +2862,31 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     fallbackAllowed && options && typeof options.fallbackPolicyName === 'string' && options.fallbackPolicyName
       ? options.fallbackPolicyName
       : (fallbackAllowed ? 'top_score_min_threshold' : null);
+  const keyAnchorSignals = {
+    topCard:
+      /pv-top-card-profile-picture|pv-top-card|top-card-profile-picture|profile-photo-edit__preview/i.test(html),
+    jsonLd:
+      /<script[^>]+type=["']application\/ld\+json["'][^>]*>/i.test(html) &&
+      /"@type"\s*:\s*"Person"/i.test(html),
+  };
+  const driftFlags = [];
+  if (!keyAnchorSignals.topCard && !keyAnchorSignals.jsonLd) {
+    driftFlags.push('missing_key_anchors');
+  }
+  const shouldTryAlternateOwnerLinking =
+    extractOptions.enableAlternateOwnerLinkingFallback ||
+    (driftFlags.indexOf('missing_key_anchors') !== -1 &&
+      (/profile-displayphoto-shrink|fileIdentifyingUrlPathSegment|com\.linkedin\.common\.VectorImage/i.test(html)));
+  if (driftFlags.length > 0) {
+    console.warn(
+      '[reknown-ext] drift flag triggered',
+      JSON.stringify({
+        driftFlags: driftFlags,
+        keyAnchors: keyAnchorSignals,
+        alternateOwnerLinking: shouldTryAlternateOwnerLinking,
+      }),
+    );
+  }
   const chooseDominantRejectReason = function (strategyOutcomes) {
     const counts = new Map();
     for (let i = 0; i < strategyOutcomes.length; i++) {
@@ -2931,16 +2957,41 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
   }
 
   const strategies = [
-    ['json-ld', extractFromJsonLd, 'json-ld-image'],
-    ['og:image', extractFromOgImage, 'og-image-meta'],
-    ['profile-img', extractFromProfileImg, 'profile-image-tag'],
-    ['vector-image', extractFromVectorImage, 'vector-image-object'],
-    ['licdn-regex', extractFromLicdnRegex, 'licdn-root+artifact'],
+    { name: 'json-ld', version: 'jsonld_v1', fn: extractFromJsonLd, defaultSource: 'json-ld-image' },
+    { name: 'og:image', version: 'ogimage_v1', fn: extractFromOgImage, defaultSource: 'og-image-meta' },
+    { name: 'profile-img', version: 'profileimg_v1', fn: extractFromProfileImg, defaultSource: 'profile-image-tag' },
+    {
+      name: 'vector-image',
+      version: 'vector_v1',
+      fn: extractFromVectorImage,
+      defaultSource: 'vector-image-object',
+      strategyOptions: {
+        allowRelaxedOwnerAssociation: !!extractOptions.allowRelaxedOwnerAssociation,
+        relaxedRequiresSingleOwnerGroup: !!extractOptions.relaxedRequiresSingleOwnerGroup,
+      },
+    },
+    {
+      name: 'vector-image',
+      version: 'vector_v2',
+      fn: extractFromVectorImage,
+      defaultSource: 'vector-image-object',
+      onlyWhen: function () { return shouldTryAlternateOwnerLinking; },
+      strategyOptions: {
+        allowRelaxedOwnerAssociation: true,
+        relaxedRequiresSingleOwnerGroup: false,
+      },
+    },
+    { name: 'licdn-regex', version: 'licdn_v1', fn: extractFromLicdnRegex, defaultSource: 'licdn-root+artifact' },
   ];
   const outcomes = [];
   const allCandidates = [];
   const validCandidates = [];
-  for (const [name, fn, defaultSource] of strategies) {
+  for (const strategyDef of strategies) {
+    if (typeof strategyDef.onlyWhen === 'function' && !strategyDef.onlyWhen()) continue;
+    const name = strategyDef.name;
+    const strategyVersion = strategyDef.version || (name + '_v1');
+    const fn = strategyDef.fn;
+    const defaultSource = strategyDef.defaultSource;
     const t0 = Date.now();
     try {
       // All strategy fns accept (html, slug); most ignore the slug, but
@@ -2948,8 +2999,18 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       // rather than whichever one happens to appear first in the page.
       const result = normalizeStrategyResult(
         await fn(html, slug, {
-          allowRelaxedOwnerAssociation: !!extractOptions.allowRelaxedOwnerAssociation,
-          relaxedRequiresSingleOwnerGroup: !!extractOptions.relaxedRequiresSingleOwnerGroup,
+          allowRelaxedOwnerAssociation: !!(
+            strategyDef.strategyOptions &&
+            Object.prototype.hasOwnProperty.call(strategyDef.strategyOptions, 'allowRelaxedOwnerAssociation')
+              ? strategyDef.strategyOptions.allowRelaxedOwnerAssociation
+              : extractOptions.allowRelaxedOwnerAssociation
+          ),
+          relaxedRequiresSingleOwnerGroup: !!(
+            strategyDef.strategyOptions &&
+            Object.prototype.hasOwnProperty.call(strategyDef.strategyOptions, 'relaxedRequiresSingleOwnerGroup')
+              ? strategyDef.strategyOptions.relaxedRequiresSingleOwnerGroup
+              : extractOptions.relaxedRequiresSingleOwnerGroup
+          ),
         }),
         name,
         slug,
@@ -2968,6 +3029,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           personId: eventContext && eventContext.personId,
           slug: slug || null,
           strategy: name,
+          strategyVersion: strategyVersion,
           ms: dt,
           status: url ? 'ok' : 'empty',
           rejectReason: result.rejectReason || null,
@@ -2979,7 +3041,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         });
       }
       if (!url) {
-        outcomes.push({ strategy: name, result: 'null', source: result.source, rejectReason: result.rejectReason || null, ms: dt });
+        outcomes.push({ strategy: name, strategyVersion: strategyVersion, result: 'null', source: result.source, rejectReason: result.rejectReason || null, ms: dt });
         continue;
       }
 
@@ -3001,6 +3063,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       const candidate = {
         url: url,
         strategy: name,
+        strategyVersion: strategyVersion,
         source: result.source || defaultSource,
         ownerMatch: result.ownerMatch || 'unknown',
         ownerIdentifiers: result.ownerIdentifiers || [],
@@ -3030,6 +3093,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         '[reknown-ext] candidate.considered',
         JSON.stringify({
           strategy: candidate.strategy,
+          strategyVersion: candidate.strategyVersion,
           source: candidate.source,
           ownerSourceLocation: candidate.ownerSourceLocation || name,
           ownerIdentifiers: candidate.ownerIdentifiers,
@@ -3060,6 +3124,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       );
       outcomes.push({
         strategy: name,
+        strategyVersion: strategyVersion,
         result: accepted ? 'candidate-accepted' : 'candidate-rejected',
         source: candidate.source,
         ownerMatch: candidate.ownerMatch,
@@ -3079,6 +3144,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           personId: eventContext && eventContext.personId,
           slug: slug || null,
           strategy: name,
+          strategyVersion: strategyVersion,
           ms: dt,
           status: accepted ? 'candidate-accepted' : 'candidate-rejected',
           rejectReason: accepted ? null : candidate.rejectReason,
@@ -3091,7 +3157,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', name, err);
-      outcomes.push({ strategy: name, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
+      outcomes.push({ strategy: name, strategyVersion: strategyVersion, result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - t0 });
     }
   }
   if (validCandidates.length === 0 && extractOptions.includeOverlayFallback) {
@@ -3110,6 +3176,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         personId: eventContext && eventContext.personId,
         slug: slug || null,
         strategy: 'overlay-photo',
+        strategyVersion: 'overlay_v1',
         ms: dt,
         status: overlayUrl ? 'ok' : 'empty',
         rejectReason: overlayResult.rejectReason || null,
@@ -3122,6 +3189,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       if (!overlayUrl) {
         outcomes.push({
           strategy: 'overlay-photo',
+          strategyVersion: 'overlay_v1',
           result: 'null',
           source: overlayResult.source,
           rejectReason: overlayResult.rejectReason || null,
@@ -3145,6 +3213,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       const candidate = {
           url: overlayUrl,
           strategy: 'overlay-photo',
+          strategyVersion: 'overlay_v1',
           source: overlayResult.source || 'overlay-photo-img',
           ownerMatch: overlayResult.ownerMatch || 'unknown',
           ownerIdentifiers: overlayResult.ownerIdentifiers || [],
@@ -3173,6 +3242,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           '[reknown-ext] candidate.considered',
           JSON.stringify({
             strategy: candidate.strategy,
+            strategyVersion: candidate.strategyVersion,
             source: candidate.source,
             ownerSourceLocation: candidate.ownerSourceLocation,
             ownerIdentifiers: candidate.ownerIdentifiers,
@@ -3203,6 +3273,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         );
         outcomes.push({
           strategy: 'overlay-photo',
+          strategyVersion: 'overlay_v1',
           result: accepted ? 'candidate-accepted' : 'candidate-rejected',
           source: candidate.source,
           ownerMatch: candidate.ownerMatch,
@@ -3221,6 +3292,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           personId: eventContext && eventContext.personId,
           slug: slug || null,
           strategy: 'overlay-photo',
+          strategyVersion: 'overlay_v1',
           ms: dt,
           status: accepted ? 'candidate-accepted' : 'candidate-rejected',
           rejectReason: accepted ? null : candidate.rejectReason,
@@ -3233,7 +3305,13 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       }
     } catch (err) {
       console.warn('[reknown-ext] strategy failed', 'overlay-photo', err);
-      outcomes.push({ strategy: 'overlay-photo', result: 'threw', error: String(err).substring(0, 100), ms: Date.now() - overlayStart });
+      outcomes.push({
+        strategy: 'overlay-photo',
+        strategyVersion: 'overlay_v1',
+        result: 'threw',
+        error: String(err).substring(0, 100),
+        ms: Date.now() - overlayStart,
+      });
     }
   }
   validCandidates.sort(function (a, b) { return b.confidence - a.confidence; });
@@ -3291,6 +3369,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     personId: eventContext && eventContext.personId,
     slug: slug || null,
     strategy: winner ? winner.strategy : null,
+    strategyVersion: winner ? winner.strategyVersion : null,
     ms: null,
     status: decisionStatus,
     decisionReason: decisionReason,
@@ -3329,6 +3408,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         allCandidates.slice(0, 3).map(function (c) {
           return {
             strategy: c.strategy,
+            strategyVersion: c.strategyVersion || null,
             source: c.source,
             score: c.confidence,
             minAcceptScore: minAcceptScore,
@@ -3346,6 +3426,13 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     );
   }
   if (winner) {
+    console.log(
+      '[reknown-ext] strategy matched',
+      'strategy=' + winner.strategy,
+      'version=' + (winner.strategyVersion || (winner.strategy + '_v1')),
+      'source=' + winner.source,
+      'score=' + winner.confidence,
+    );
     logStageBoundary(
       {
         requestId: eventContext && eventContext.requestId,
@@ -3368,6 +3455,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       selectedCandidate: {
         score: winner.confidence,
         strategy: winner.strategy,
+        strategyVersion: winner.strategyVersion || null,
         source: winner.source,
         decisionStatus: decisionStatus,
         warning: decisionStatus === 'accepted_fallback_low_confidence',
@@ -3376,6 +3464,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       rejectReason: winner.rejectReason || null,
       dominantRejectReason: null,
       outcomes: outcomes,
+      driftFlags: driftFlags,
     };
   }
   let dominantRejectReason = chooseDominantRejectReason(outcomes);
@@ -3384,6 +3473,12 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     .map(function (o) { return normalizeExplicitRejectCode(o && o.rejectReason) || (o && o.rejectReason) || null; })
     .filter(function (r) { return !!r; });
   if (normalizedOutcomeReasons.indexOf('reject.truncated_root_only') !== -1) {
+    dominantRejectReason = 'reject.truncated_root_only';
+  }
+  const hasDisplayPhotoRootsWithoutArtifacts =
+    /"rootUrl"\s*:\s*"[^"]*profile-displayphoto-shrink_?"/i.test(html) &&
+    !/"fileIdentifyingUrlPathSegment"\s*:\s*"[^"]+"/i.test(html);
+  if (hasDisplayPhotoRootsWithoutArtifacts && dominantRejectReason === 'no_displayphoto_artifacts') {
     dominantRejectReason = 'reject.truncated_root_only';
   }
   if (!dominantRejectReason) {
@@ -3403,7 +3498,11 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       'snapshot=' + JSON.stringify(snapshot),
     );
   }
-  return makeFailure(dominantRejectReason, { dominantRejectReason: dominantRejectReason || null, outcomes: outcomes });
+  return makeFailure(dominantRejectReason, {
+    dominantRejectReason: dominantRejectReason || null,
+    outcomes: outcomes,
+    driftFlags: driftFlags,
+  });
 }
 
 async function blobToDataUrl(blob) {
@@ -4056,6 +4155,10 @@ async function enrichOne(person, context) {
     extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
       ? extraction.dominantRejectReason
       : null;
+  let extractionDriftFlags =
+    extraction && typeof extraction === 'object' && Array.isArray(extraction.driftFlags)
+      ? extraction.driftFlags.slice(0, 8)
+      : [];
   if (mutableState) {
     mutableState.selectedCandidate =
       extraction && typeof extraction === 'object' && Object.prototype.hasOwnProperty.call(extraction, 'selectedCandidate')
@@ -4076,10 +4179,14 @@ async function enrichOne(person, context) {
       'hostIsMediaLicdn=' + (photoUrl ? /^https:\/\/media\.licdn\.com\//.test(photoUrl) : false),
       'rejectReason=' + (extractionRejectReason || ''),
       'dominantRejectReason=' + (extractionDominantRejectReason || ''),
+      'driftFlags=' + JSON.stringify(extractionDriftFlags),
     );
   }
   if (!photoUrl) {
-    const retryPlan = ['profile_retry', 'overlay', 'relaxed_owner'];
+    const driftTriggered = extractionDriftFlags.indexOf('missing_key_anchors') !== -1;
+    const retryPlan = driftTriggered
+      ? ['profile_retry', 'relaxed_owner', 'overlay']
+      : ['profile_retry', 'overlay', 'relaxed_owner'];
     const executed = [];
     const jitterMs = 35 + Math.floor(Math.random() * 70);
     executed.push('profile_retry');
@@ -4117,6 +4224,10 @@ async function enrichOne(person, context) {
             extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
               ? extraction.dominantRejectReason
               : null;
+          extractionDriftFlags =
+            extraction && typeof extraction === 'object' && Array.isArray(extraction.driftFlags)
+              ? extraction.driftFlags.slice(0, 8)
+              : extractionDriftFlags;
         }
       }
     } catch (retryErr) {
@@ -4140,6 +4251,35 @@ async function enrichOne(person, context) {
         return finalizeResult({ status: 'error', error: 'cancelled' });
       }
     }
+    const runRelaxedOwnerBeforeOverlay = driftTriggered;
+    if (!photoUrl && runRelaxedOwnerBeforeOverlay) {
+      executed.push('relaxed_owner');
+      extraction = await extractPhotoUrl(html, slug, eventBase, {
+        includeOverlayFallback: false,
+        allowRelaxedOwnerAssociation: true,
+        relaxedRequiresSingleOwnerGroup: true,
+        allowLowConfidenceFallback: true,
+        minAcceptScore: 58,
+        fallbackPolicyName: 'drift_relaxed_owner_low_confidence',
+        enableAlternateOwnerLinkingFallback: true,
+      });
+      photoUrl =
+        typeof extraction === 'string'
+          ? extraction
+          : (extraction && typeof extraction.url === 'string' ? extraction.url : null);
+      extractionRejectReason =
+        extraction && typeof extraction === 'object' && typeof extraction.rejectReason === 'string'
+          ? extraction.rejectReason
+          : null;
+      extractionDominantRejectReason =
+        extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
+          ? extraction.dominantRejectReason
+          : null;
+      extractionDriftFlags =
+        extraction && typeof extraction === 'object' && Array.isArray(extraction.driftFlags)
+          ? extraction.driftFlags.slice(0, 8)
+          : extractionDriftFlags;
+    }
     if (!photoUrl) {
       executed.push('overlay');
       extraction = await extractPhotoUrl(html, slug, eventBase, {
@@ -4159,8 +4299,12 @@ async function enrichOne(person, context) {
         extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
           ? extraction.dominantRejectReason
           : null;
+      extractionDriftFlags =
+        extraction && typeof extraction === 'object' && Array.isArray(extraction.driftFlags)
+          ? extraction.driftFlags.slice(0, 8)
+          : extractionDriftFlags;
     }
-    if (!photoUrl) {
+    if (!photoUrl && !runRelaxedOwnerBeforeOverlay) {
       executed.push('relaxed_owner');
       extraction = await extractPhotoUrl(html, slug, eventBase, {
         includeOverlayFallback: false,
@@ -4182,11 +4326,16 @@ async function enrichOne(person, context) {
         extraction && typeof extraction === 'object' && typeof extraction.dominantRejectReason === 'string'
           ? extraction.dominantRejectReason
           : null;
+      extractionDriftFlags =
+        extraction && typeof extraction === 'object' && Array.isArray(extraction.driftFlags)
+          ? extraction.driftFlags.slice(0, 8)
+          : extractionDriftFlags;
     }
     console.log(
       '[reknown-ext] enrichOne retry decision',
       'retryPlan=' + JSON.stringify(retryPlan),
       'executed=' + JSON.stringify(executed),
+      'driftFlags=' + JSON.stringify(extractionDriftFlags),
       'finalDecision=' + (photoUrl ? 'photo_found' : 'no_photo_found'),
     );
   }
