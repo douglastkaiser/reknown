@@ -1254,7 +1254,23 @@ function extractFromVectorImage(html, slug, options) {
   }
 
   console.log('[reknown-ext] vector-image: winning extractor=' + (best.extractor || winningExtractor));
-  return best.url;
+  return {
+    url: best.url,
+    source: 'vector-image-object',
+    ownerIdentifiers: best.ownerPublicIdentifier ? [best.ownerPublicIdentifier] : [],
+    ownerPublicIdentifier: best.ownerPublicIdentifier || null,
+    ownerSourceLocation: 'vector_blob',
+    ownerDistanceBytes: typeof best.ownerDistance === 'number' ? best.ownerDistance : null,
+    ownerMatch:
+      slug && best.ownerPublicIdentifier
+        ? (best.ownerPublicIdentifier.toLowerCase() === slug.toLowerCase() ? 'exact' : 'mismatch')
+        : 'probable',
+    reasons: [
+      'extractor:' + (best.extractor || winningExtractor),
+      'associationMode:' + (best.associationMode || 'proximity-fallback'),
+      'ownerDistance:' + (typeof best.ownerDistance === 'number' ? best.ownerDistance : 'n/a'),
+    ],
+  };
 }
 
 function extractVectorCandidatesFromObjects(decoded, slug) {
@@ -2760,6 +2776,9 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         source: fallbackSource,
         ownerMatch: inferOwnerMatch({}, strategyName, strategySlug),
         reasons: [],
+        ownerIdentifiers: [],
+        ownerSourceLocation: null,
+        ownerDistanceBytes: null,
       };
     }
     if (raw && typeof raw === 'object') {
@@ -2769,6 +2788,19 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         source: typeof raw.source === 'string' && raw.source ? raw.source : fallbackSource,
         ownerMatch: inferOwnerMatch(raw, strategyName, strategySlug),
         reasons: Array.isArray(raw.reasons) ? raw.reasons.slice(0, 12) : [],
+        ownerIdentifiers: Array.isArray(raw.ownerIdentifiers)
+          ? raw.ownerIdentifiers.filter(function (v) { return typeof v === 'string' && v.trim(); }).slice(0, 5)
+          : (typeof raw.ownerPublicIdentifier === 'string' && raw.ownerPublicIdentifier
+            ? [raw.ownerPublicIdentifier]
+            : []),
+        ownerSourceLocation:
+          typeof raw.ownerSourceLocation === 'string' && raw.ownerSourceLocation
+            ? raw.ownerSourceLocation
+            : null,
+        ownerDistanceBytes:
+          typeof raw.ownerDistanceBytes === 'number' && Number.isFinite(raw.ownerDistanceBytes)
+            ? raw.ownerDistanceBytes
+            : null,
       };
     }
     return {
@@ -2777,9 +2809,12 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       source: fallbackSource,
       ownerMatch: inferOwnerMatch({}, strategyName, strategySlug),
       reasons: [],
+      ownerIdentifiers: [],
+      ownerSourceLocation: null,
+      ownerDistanceBytes: null,
     };
   };
-  const scoreCandidate = function (candidate) {
+  const scoreCandidateComponents = function (candidate) {
     const baseByStrategy = {
       'vector-image': 65,
       'licdn-regex': 58,
@@ -2788,16 +2823,34 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       'json-ld': 40,
       'og:image': 34,
     };
-    let score = baseByStrategy[candidate.strategy] || 30;
-    if (candidate.isMediaLicdn) score += 12;
-    if (candidate.hasSig) score += 10;
-    if (candidate.hasExpiry) score += 8;
-    if (candidate.ownerMatch === 'exact') score += 12;
-    else if (candidate.ownerMatch === 'probable') score += 6;
-    else if (candidate.ownerMatch === 'mismatch') score -= 30;
-    if (candidate.dims && candidate.dims.width >= 300 && candidate.dims.height >= 300) score += 6;
-    if (candidate.isNonProfileAsset) score -= 45;
-    return Math.max(0, Math.min(100, score));
+    const base = baseByStrategy[candidate.strategy] || 30;
+    const hostBonus = candidate.isMediaLicdn ? 12 : 0;
+    const signatureBonus = candidate.hasSig ? 10 : 0;
+    const expiryBonus = candidate.hasExpiry ? 8 : 0;
+    const ownerBonus = candidate.ownerMatch === 'exact' ? 12 : (candidate.ownerMatch === 'probable' ? 6 : 0);
+    const ownerPenalty = candidate.ownerMatch === 'mismatch' ? -30 : 0;
+    const dimsBonus =
+      candidate.dims && candidate.dims.width >= 300 && candidate.dims.height >= 300
+        ? 6
+        : 0;
+    const nonProfilePenalty = candidate.isNonProfileAsset ? -45 : 0;
+    const rawScore = base + hostBonus + signatureBonus + expiryBonus + ownerBonus + ownerPenalty + dimsBonus + nonProfilePenalty;
+    const finalScore = Math.max(0, Math.min(100, rawScore));
+    return {
+      base: base,
+      hostBonus: hostBonus,
+      signatureBonus: signatureBonus,
+      expiryBonus: expiryBonus,
+      ownerBonus: ownerBonus,
+      ownerPenalty: ownerPenalty,
+      dimsBonus: dimsBonus,
+      nonProfilePenalty: nonProfilePenalty,
+      rawScore: rawScore,
+      finalScore: finalScore,
+    };
+  };
+  const scoreCandidate = function (candidate) {
+    return scoreCandidateComponents(candidate).finalScore;
   };
   const minAcceptScore =
     options && typeof options.minAcceptScore === 'number'
@@ -2950,6 +3003,9 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         strategy: name,
         source: result.source || defaultSource,
         ownerMatch: result.ownerMatch || 'unknown',
+        ownerIdentifiers: result.ownerIdentifiers || [],
+        ownerSourceLocation: result.ownerSourceLocation || null,
+        ownerDistanceBytes: result.ownerDistanceBytes,
         confidence: 0,
         reasons: result.reasons.concat(reasons),
         len: url.length,
@@ -2962,11 +3018,46 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         rejectReasons: [],
       };
       candidate.confidence = scoreCandidate(candidate);
+      candidate.scoreComponents = scoreCandidateComponents(candidate);
       candidate.rejectReasons = getCandidateRejectCodes(candidate);
       candidate.rejectReason = getDominantCandidateRejectCode(candidate);
+      candidate.urlPrefix = (summarizeCandidateUrl(candidate.url) || {}).prefix || null;
+      candidate.urlHash = getNormalizedUrlFingerprint(candidate.url);
 
       const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
       allCandidates.push(candidate);
+      console.log(
+        '[reknown-ext] candidate.considered',
+        JSON.stringify({
+          strategy: candidate.strategy,
+          source: candidate.source,
+          ownerSourceLocation: candidate.ownerSourceLocation || name,
+          ownerIdentifiers: candidate.ownerIdentifiers,
+          ownerDistanceBytes:
+            typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes : null,
+          slugProximity: {
+            withinOwnerWindow:
+              typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes <= OWNER_PROXIMITY_BYTES : null,
+            withinFallbackWindow:
+              typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes <= OWNER_PROXIMITY_FALLBACK_BYTES : null,
+          },
+          urlPrefix: candidate.urlPrefix,
+          urlHash: candidate.urlHash,
+          acceptance: {
+            hardGates: {
+              mediaLicdnHost: candidate.isMediaLicdn,
+              signaturePresent: candidate.hasSig,
+              expiryPresent: candidate.hasExpiry,
+              notNonProfileAsset: !candidate.isNonProfileAsset,
+              ownerNotMismatch: candidate.ownerMatch !== 'mismatch',
+            },
+            confidenceScore: candidate.confidence,
+            minAcceptScore: minAcceptScore,
+            minAcceptScoreHit: candidate.confidence >= minAcceptScore,
+            scoreComponents: candidate.scoreComponents,
+          },
+        }),
+      );
       outcomes.push({
         strategy: name,
         result: accepted ? 'candidate-accepted' : 'candidate-rejected',
@@ -3056,6 +3147,9 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           strategy: 'overlay-photo',
           source: overlayResult.source || 'overlay-photo-img',
           ownerMatch: overlayResult.ownerMatch || 'unknown',
+          ownerIdentifiers: overlayResult.ownerIdentifiers || [],
+          ownerSourceLocation: overlayResult.ownerSourceLocation || 'overlay',
+          ownerDistanceBytes: overlayResult.ownerDistanceBytes,
           confidence: 0,
           reasons: overlayResult.reasons.concat(reasons),
           len: overlayUrl.length,
@@ -3068,10 +3162,45 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           rejectReasons: [],
         };
         candidate.confidence = scoreCandidate(candidate);
+        candidate.scoreComponents = scoreCandidateComponents(candidate);
         candidate.rejectReasons = getCandidateRejectCodes(candidate);
         candidate.rejectReason = getDominantCandidateRejectCode(candidate);
+        candidate.urlPrefix = (summarizeCandidateUrl(candidate.url) || {}).prefix || null;
+        candidate.urlHash = getNormalizedUrlFingerprint(candidate.url);
         const accepted = candidate.isMediaLicdn && candidate.hasSig && candidate.hasExpiry && !candidate.isNonProfileAsset && candidate.ownerMatch !== 'mismatch';
         allCandidates.push(candidate);
+        console.log(
+          '[reknown-ext] candidate.considered',
+          JSON.stringify({
+            strategy: candidate.strategy,
+            source: candidate.source,
+            ownerSourceLocation: candidate.ownerSourceLocation,
+            ownerIdentifiers: candidate.ownerIdentifiers,
+            ownerDistanceBytes:
+              typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes : null,
+            slugProximity: {
+              withinOwnerWindow:
+                typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes <= OWNER_PROXIMITY_BYTES : null,
+              withinFallbackWindow:
+                typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes <= OWNER_PROXIMITY_FALLBACK_BYTES : null,
+            },
+            urlPrefix: candidate.urlPrefix,
+            urlHash: candidate.urlHash,
+            acceptance: {
+              hardGates: {
+                mediaLicdnHost: candidate.isMediaLicdn,
+                signaturePresent: candidate.hasSig,
+                expiryPresent: candidate.hasExpiry,
+                notNonProfileAsset: !candidate.isNonProfileAsset,
+                ownerNotMismatch: candidate.ownerMatch !== 'mismatch',
+              },
+              confidenceScore: candidate.confidence,
+              minAcceptScore: minAcceptScore,
+              minAcceptScoreHit: candidate.confidence >= minAcceptScore,
+              scoreComponents: candidate.scoreComponents,
+            },
+          }),
+        );
         outcomes.push({
           strategy: 'overlay-photo',
           result: accepted ? 'candidate-accepted' : 'candidate-rejected',
@@ -3179,10 +3308,43 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         return {
           score: c.confidence,
           rejectReasons: c.rejectReasons,
+          ownerIdentifiers: c.ownerIdentifiers || [],
+          ownerSourceLocation: c.ownerSourceLocation || c.strategy,
+          ownerDistanceBytes: typeof c.ownerDistanceBytes === 'number' ? c.ownerDistanceBytes : null,
+          candidateUrlPrefix: c.urlPrefix || null,
           normalizedUrlFingerprint: getNormalizedUrlFingerprint(c.url),
+          scoreComponents: c.scoreComponents || null,
+          thresholdHits: {
+            minAcceptScore: c.confidence >= minAcceptScore,
+            hardAccept:
+              c.isMediaLicdn && c.hasSig && c.hasExpiry && !c.isNonProfileAsset && c.ownerMatch !== 'mismatch',
+          },
         };
       }),
   });
+  if (!winner) {
+    console.warn(
+      '[reknown-ext] candidate.top3.masked.no_winner',
+      JSON.stringify(
+        allCandidates.slice(0, 3).map(function (c) {
+          return {
+            strategy: c.strategy,
+            source: c.source,
+            score: c.confidence,
+            minAcceptScore: minAcceptScore,
+            minAcceptScoreHit: c.confidence >= minAcceptScore,
+            ownerSourceLocation: c.ownerSourceLocation || c.strategy,
+            ownerIdentifiers: c.ownerIdentifiers || [],
+            ownerDistanceBytes: typeof c.ownerDistanceBytes === 'number' ? c.ownerDistanceBytes : null,
+            candidateUrlPrefix: c.urlPrefix || null,
+            normalizedUrlFingerprint: c.urlHash || getNormalizedUrlFingerprint(c.url),
+            rejectReasons: c.rejectReasons || [],
+            scoreComponents: c.scoreComponents || null,
+          };
+        }),
+      ),
+    );
+  }
   if (winner) {
     logStageBoundary(
       {
