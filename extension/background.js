@@ -82,6 +82,8 @@ browserApi.runtime.onConnect.addListener((port) => {
 const LINKEDIN_PROFILE_RE = /^https:\/\/(www\.)?linkedin\.com\/in\/[^\s?#]+/i;
 const DEFAULT_AVATAR_MARKERS = ['ghost-person', 'ghosts/person', 'default-avatar', 'anon-user'];
 const MAX_PHOTO_DIM = 400;
+const RECENT_PROFILE_DEBUG_CACHE_LIMIT = 12;
+const recentProfileDebugCache = [];
 const DEFAULT_DEBUG_CONFIG = {
   debugSlug: '',
   debugRequestId: '',
@@ -3425,6 +3427,26 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       ),
     );
   }
+  const topCandidatesForDebug = allCandidates
+    .slice(0, 5)
+    .map(function (c) {
+      return {
+        strategy: c.strategy,
+        strategyVersion: c.strategyVersion || null,
+        source: c.source || null,
+        score: c.confidence,
+        minAcceptScore: minAcceptScore,
+        minAcceptScoreHit: c.confidence >= minAcceptScore,
+        ownerMatch: c.ownerMatch || null,
+        ownerIdentifiers: c.ownerIdentifiers || [],
+        ownerSourceLocation: c.ownerSourceLocation || c.strategy || null,
+        ownerDistanceBytes: typeof c.ownerDistanceBytes === 'number' ? c.ownerDistanceBytes : null,
+        candidateUrlPrefix: c.urlPrefix || null,
+        normalizedUrlFingerprint: c.urlHash || getNormalizedUrlFingerprint(c.url),
+        rejectReasons: c.rejectReasons || [],
+        scoreComponents: c.scoreComponents || null,
+      };
+    });
   if (winner) {
     console.log(
       '[reknown-ext] strategy matched',
@@ -3502,6 +3524,15 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     dominantRejectReason: dominantRejectReason || null,
     outcomes: outcomes,
     driftFlags: driftFlags,
+    candidateDiagnostics: topCandidatesForDebug,
+    decisionSummary: {
+      decisionStatus: decisionStatus,
+      decisionReason: decisionReason,
+      minAcceptScore: minAcceptScore,
+      fallbackAllowed: fallbackAllowed,
+      fallbackPolicyName: fallbackPolicyName,
+      candidateCount: allCandidates.length,
+    },
   });
 }
 
@@ -3560,6 +3591,65 @@ function stableHash32(text) {
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function extractTopPublicIdentifiers(html, limit) {
+  const maxItems = Math.max(1, Math.min(10, typeof limit === 'number' ? limit : 5));
+  if (!html || typeof html !== 'string') return [];
+  const counts = new Map();
+  const pattern = /"publicIdentifier"\s*:\s*"([^"]+)"/g;
+  let match;
+  while ((match = pattern.exec(html)) !== null) {
+    const id = String(match[1] || '').trim();
+    if (!id) continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .sort(function (a, b) { return b[1] - a[1]; })
+    .slice(0, maxItems)
+    .map(function (entry) {
+      return { publicIdentifier: entry[0], hits: entry[1] };
+    });
+}
+
+function logProfilePayloadComparisonSnapshot(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  const entry = Object.assign({}, payload, {
+    timestamp: new Date().toISOString(),
+  });
+  recentProfileDebugCache.push(entry);
+  if (recentProfileDebugCache.length > RECENT_PROFILE_DEBUG_CACHE_LIMIT) {
+    recentProfileDebugCache.splice(0, recentProfileDebugCache.length - RECENT_PROFILE_DEBUG_CACHE_LIMIT);
+  }
+  const sameFingerprintCount = recentProfileDebugCache.filter(function (item) {
+    return item && item.htmlHash32 && payload.htmlHash32 && item.htmlHash32 === payload.htmlHash32;
+  }).length;
+  const recentComparisons = recentProfileDebugCache
+    .slice(-3)
+    .map(function (item) {
+      return {
+        slug: item.slug || null,
+        htmlHash32: item.htmlHash32 || null,
+        htmlLen: item.htmlLen || null,
+        targetPublicIdentifierHits: item.targetPublicIdentifierHits || 0,
+        topPublicIdentifiers: Array.isArray(item.topPublicIdentifiers) ? item.topPublicIdentifiers.slice(0, 3) : [],
+      };
+    });
+  console.log(
+    '[reknown-ext] profile_payload.compare',
+    JSON.stringify({
+      current: {
+        slug: payload.slug || null,
+        htmlHash32: payload.htmlHash32 || null,
+        htmlLen: payload.htmlLen || null,
+        targetPublicIdentifierHits: payload.targetPublicIdentifierHits || 0,
+        topPublicIdentifiers: Array.isArray(payload.topPublicIdentifiers) ? payload.topPublicIdentifiers.slice(0, 5) : [],
+      },
+      recentWindowSize: recentProfileDebugCache.length,
+      sameFingerprintCount: sameFingerprintCount,
+      recentComparisons: recentComparisons,
+    }),
+  );
 }
 
 function maskSensitiveUrlBits(text) {
@@ -3683,6 +3773,13 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
   const rejectedOutcomes = extraction && Array.isArray(extraction.outcomes)
     ? extraction.outcomes.filter(function (o) { return o && o.result === 'candidate-rejected'; }).slice(0, 3)
     : [];
+  const candidateDiagnostics = extraction && Array.isArray(extraction.candidateDiagnostics)
+    ? extraction.candidateDiagnostics.slice(0, 5)
+    : [];
+  const decisionSummary =
+    extraction && extraction.decisionSummary && typeof extraction.decisionSummary === 'object'
+      ? extraction.decisionSummary
+      : null;
   const topOwners = Array.from(ownerCounts.entries())
     .sort(function (a, b) { return b[1] - a[1]; })
     .slice(0, 3)
@@ -3719,6 +3816,8 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
         hasExpiry: !!o.hasExpiry,
       };
     }),
+    candidateDiagnostics: candidateDiagnostics,
+    decisionSummary: decisionSummary,
   };
 }
 
@@ -4040,6 +4139,20 @@ async function enrichOne(person, context) {
     hasTopCardSelector: html.includes('pv-top-card'),
     hasDisplayPhotoSelector: html.includes('profile-displayphoto-shrink'),
   };
+  const topPublicIdentifiers = extractTopPublicIdentifiers(html, 5);
+  const targetPublicIdentifierHits = slug
+    ? countRegex(
+      html,
+      new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(slug.toLowerCase()) + '"', 'gi'),
+    )
+    : 0;
+  logProfilePayloadComparisonSnapshot({
+    slug: slug || null,
+    htmlHash32: stableHash32(html),
+    htmlLen: html.length,
+    targetPublicIdentifierHits: targetPublicIdentifierHits,
+    topPublicIdentifiers: topPublicIdentifiers,
+  });
   const jsonPayloadNonEmpty =
     (html.includes('application/ld+json') && parserSignals.hasJsonLdPerson) ||
     /"included"\s*:/.test(html) ||
