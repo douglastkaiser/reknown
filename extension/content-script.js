@@ -3,6 +3,20 @@
 
 (function () {
   const browserApi = globalThis.browser || globalThis.chrome;
+  const DETECT_LOG_WINDOW_MS = 7000;
+  const verbose = (() => {
+    try {
+      if (globalThis.__REKNOWN_EXTENSION_VERBOSE__ === true) return true;
+      if (window.location.search.includes('reknownExtVerbose=1')) return true;
+      if (window.localStorage.getItem('reknownExtensionVerbose') === '1') return true;
+      if (window.sessionStorage.getItem('reknownExtensionVerbose') === '1') return true;
+    } catch {
+      // noop
+    }
+    return false;
+  })();
+  let hasAnnouncedDetection = false;
+  let lastDetectLogAt = 0;
 
   console.log(
     '[reknown-ext] content-script loaded on',
@@ -10,6 +24,7 @@
     'URL=' + window.location.href,
     'readyState=' + document.readyState,
     'runtimeId=' + (browserApi && browserApi.runtime && browserApi.runtime.id),
+    'verbose=' + verbose,
   );
 
   // Per-requestId tally of progress events forwarded to the page. Helps us
@@ -63,16 +78,38 @@
   const EXT_VERSION = browserApi.runtime.getManifest().version;
 
   // Announce presence to the page.
-  function announce() {
-    console.log('[reknown-ext] announcing REKNOWN_EXTENSION_DETECTED v' + EXT_VERSION);
+  function logDetection(message, details) {
+    const now = Date.now();
+    if (!verbose && now - lastDetectLogAt < DETECT_LOG_WINDOW_MS) return;
+    lastDetectLogAt = now;
+    console.log(message, details || '');
+  }
+
+  function announce(options) {
+    const opts = options && typeof options === 'object' ? options : {};
+    const reason = typeof opts.reason === 'string' ? opts.reason : 'unspecified';
+    const explicitReconnect = opts.explicitReconnect === true;
+    if (explicitReconnect) {
+      hasAnnouncedDetection = false;
+    }
+    if (hasAnnouncedDetection && !verbose) {
+      return;
+    }
+    logDetection('[reknown-ext] announcing REKNOWN_EXTENSION_DETECTED v' + EXT_VERSION, 'reason=' + reason);
     window.postMessage(
-      { type: 'REKNOWN_EXTENSION_DETECTED', version: EXT_VERSION },
+      {
+        type: 'REKNOWN_EXTENSION_DETECTED',
+        version: EXT_VERSION,
+        reason,
+        explicitReconnect,
+      },
       window.location.origin,
     );
+    hasAnnouncedDetection = true;
   }
-  announce();
+  announce({ reason: 'content-script-load' });
   // Re-announce on focus in case the webapp mounted its listener late.
-  window.addEventListener('focus', announce);
+  window.addEventListener('focus', () => announce({ reason: 'window-focus' }));
 
   // Page -> background
   window.addEventListener('message', (event) => {
@@ -186,7 +223,14 @@
         closeKeepAlive(requestId);
       }
     } else if (type === 'REKNOWN_EXTENSION_PING') {
-      announce();
+      const explicitReconnect =
+        data.explicitReconnect === true ||
+        data.reconnect === true ||
+        data.force === true;
+      announce({
+        reason: explicitReconnect ? 'explicit-reconnect' : 'page-ping',
+        explicitReconnect,
+      });
     }
   });
 
