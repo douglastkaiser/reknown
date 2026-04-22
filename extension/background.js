@@ -1213,6 +1213,10 @@ function extractFromVectorImage(html, slug, options) {
           requireSingleGroup: !!vectorOptions.relaxedRequiresSingleOwnerGroup,
         })
         : null;
+      const weakSignalSelection =
+        !relaxedSelection && vectorOptions.enableWeakOwnerLinking
+          ? chooseAnchorPoorOwnerAssociation(proximityEligible, decoded, slug)
+          : null;
       if (relaxedSelection && relaxedSelection.pool && relaxedSelection.pool.length > 0) {
         pool = relaxedSelection.pool;
         if (DEBUG_VERBOSE) {
@@ -1234,6 +1238,30 @@ function extractFromVectorImage(html, slug, options) {
                 associationMode: c.associationMode || 'proximity-fallback',
                 ownerDistance: c.ownerDistance,
                 range: (c.groupStart != null && c.groupEnd != null) ? (c.groupStart + '-' + c.groupEnd) : 'n/a',
+              };
+            })),
+          );
+        }
+      } else if (weakSignalSelection && weakSignalSelection.pool && weakSignalSelection.pool.length > 0) {
+        pool = weakSignalSelection.pool;
+        for (let wi = 0; wi < pool.length; wi++) {
+          pool[wi].associationMode = 'weak-signal-fallback';
+          pool[wi].associationConfidence = 'anchor-poor';
+        }
+        if (DEBUG_VERBOSE) {
+          console.warn(
+            '[reknown-ext] vector-image: weak-signal owner linking accepted in drift mode',
+            'slug=' + slug,
+            'mode=' + weakSignalSelection.mode,
+            'reason=' + weakSignalSelection.reason,
+            'bestScore=' + weakSignalSelection.bestScore,
+            'selected=' + weakSignalSelection.pool.length,
+            'scored=' + JSON.stringify(weakSignalSelection.scored.map(function (entry) {
+              return {
+                rootIndex: entry.item.rootIndex,
+                source: entry.item.candidateSource || entry.item.extractor || 'unknown',
+                associationGroupKey: entry.item.associationGroupKey || null,
+                scoreComponents: entry.scoreComponents,
               };
             })),
           );
@@ -1311,6 +1339,10 @@ function extractFromVectorImage(html, slug, options) {
       'associationMode:' + (best.associationMode || 'proximity-fallback'),
       'ownerDistance:' + (typeof best.ownerDistance === 'number' ? best.ownerDistance : 'n/a'),
     ],
+    ownerAssociationSignals:
+      best && best.ownerAssociationSignals && typeof best.ownerAssociationSignals === 'object'
+        ? best.ownerAssociationSignals
+        : null,
   };
 }
 
@@ -2767,6 +2799,119 @@ function chooseRelaxedSingleOwnerAssociation(items, ownerOffsets, slug, options)
   };
 }
 
+function chooseAnchorPoorOwnerAssociation(items, decoded, slug) {
+  if (!slug || !decoded || !items || items.length === 0) return null;
+  const normalizedSlug = String(slug).trim().toLowerCase();
+  if (!normalizedSlug) return null;
+
+  const slugPathRegex = new RegExp('/in/' + escapeRegExp(normalizedSlug) + '(?:[/?#"]|$)', 'gi');
+  const publicIdentifierRegex = new RegExp('"publicIdentifier"\\s*:\\s*"' + escapeRegExp(normalizedSlug) + '"', 'gi');
+  const cooccurrenceRegex = new RegExp(escapeRegExp(normalizedSlug), 'gi');
+  const slugPathOffsets = [];
+  let match;
+  while ((match = slugPathRegex.exec(decoded)) !== null) slugPathOffsets.push(match.index);
+  while ((match = publicIdentifierRegex.exec(decoded)) !== null) slugPathOffsets.push(match.index);
+
+  const objectRanges = buildJsonObjectRanges(decoded);
+  const slugUrnRanges = [];
+  for (let i = 0; i < objectRanges.length; i++) {
+    const range = objectRanges[i];
+    const chunk = decoded.substring(range.start, range.end + 1);
+    const hasSlugSignal =
+      chunk.toLowerCase().indexOf(normalizedSlug) !== -1 ||
+      new RegExp('/in/' + escapeRegExp(normalizedSlug) + '(?:[/?#"]|$)', 'i').test(chunk);
+    if (!hasSlugSignal) continue;
+    if (!/urn:li:(?:fsd_)?profile:[^"\\,}]+/i.test(chunk)) continue;
+    slugUrnRanges.push(range);
+  }
+
+  const scoreFromDistance = function (distance, limits, scores) {
+    if (!Number.isFinite(distance)) return 0;
+    for (let i = 0; i < limits.length; i++) {
+      if (distance <= limits[i]) return scores[i];
+    }
+    return scores[scores.length - 1];
+  };
+  const distanceToUrnRange = function (anchorOffset) {
+    if (!slugUrnRanges.length || !Number.isFinite(anchorOffset)) return Infinity;
+    let best = Infinity;
+    for (let i = 0; i < slugUrnRanges.length; i++) {
+      const range = slugUrnRanges[i];
+      if (anchorOffset >= range.start && anchorOffset <= range.end) return 0;
+      const center = Math.floor((range.start + range.end) / 2);
+      const d = Math.abs(anchorOffset - center);
+      if (d < best) best = d;
+    }
+    return best;
+  };
+
+  const scored = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const anchorOffset = typeof item.ownerAnchorOffset === 'number'
+      ? item.ownerAnchorOffset
+      : (typeof item.rootOffset === 'number' ? item.rootOffset : item.rootIndex);
+    const pathnameDistance = nearestOwnerDistance(anchorOffset, slugPathOffsets);
+    const pathnameSlugProximity = scoreFromDistance(
+      pathnameDistance,
+      [220, 600, 1200, 2200, Infinity],
+      [34, 24, 14, 7, 0],
+    );
+    const urnDistance = distanceToUrnRange(anchorOffset);
+    const nearbyProfileUrnEntity = scoreFromDistance(
+      urnDistance,
+      [0, 450, 900, Infinity],
+      [30, 16, 8, 0],
+    );
+    const windowStart = Math.max(0, anchorOffset - 700);
+    const windowEnd = Math.min(decoded.length, anchorOffset + 700);
+    const windowText = decoded.substring(windowStart, windowEnd).toLowerCase();
+    const cooccurrenceHits = (windowText.match(cooccurrenceRegex) || []).length;
+    const repeatedIdentifierCooccurrence = Math.min(24, cooccurrenceHits * 6);
+    const totalScore = pathnameSlugProximity + nearbyProfileUrnEntity + repeatedIdentifierCooccurrence;
+    const scoreComponents = {
+      pathnameSlugProximity: pathnameSlugProximity,
+      nearbyProfileUrnEntity: nearbyProfileUrnEntity,
+      repeatedIdentifierCooccurrence: repeatedIdentifierCooccurrence,
+      totalScore: totalScore,
+      pathnameDistance: Number.isFinite(pathnameDistance) ? pathnameDistance : null,
+      urnDistance: Number.isFinite(urnDistance) ? urnDistance : null,
+      cooccurrenceHits: cooccurrenceHits,
+    };
+    item.ownerAssociationSignals = scoreComponents;
+    scored.push({
+      item: item,
+      anchorOffset: anchorOffset,
+      totalScore: totalScore,
+      scoreComponents: scoreComponents,
+    });
+  }
+
+  if (scored.length === 0) return null;
+  scored.sort(function (a, b) {
+    if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+    const aPath = Number.isFinite(a.scoreComponents.pathnameDistance) ? a.scoreComponents.pathnameDistance : Infinity;
+    const bPath = Number.isFinite(b.scoreComponents.pathnameDistance) ? b.scoreComponents.pathnameDistance : Infinity;
+    return aPath - bPath;
+  });
+  const best = scored[0];
+  if (best.totalScore < 28) return null;
+
+  const bestGroupKey = best.item.associationGroupKey;
+  const selectedPool = (typeof bestGroupKey === 'string' && bestGroupKey)
+    ? scored
+      .filter(function (entry) { return entry.item.associationGroupKey === bestGroupKey; })
+      .map(function (entry) { return entry.item; })
+    : [best.item];
+  return {
+    pool: selectedPool,
+    mode: 'anchor-poor-owner-vector',
+    reason: 'weak_signal_owner_linking',
+    scored: scored.slice(0, 6),
+    bestScore: best.totalScore,
+  };
+}
+
 async function extractPhotoUrl(html, slug, eventContext, options) {
   const extractOptions = Object.assign(
     {
@@ -2821,6 +2966,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         ownerIdentifiers: [],
         ownerSourceLocation: null,
         ownerDistanceBytes: null,
+        ownerAssociationSignals: null,
       };
     }
     if (raw && typeof raw === 'object') {
@@ -2843,6 +2989,10 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           typeof raw.ownerDistanceBytes === 'number' && Number.isFinite(raw.ownerDistanceBytes)
             ? raw.ownerDistanceBytes
             : null,
+        ownerAssociationSignals:
+          raw.ownerAssociationSignals && typeof raw.ownerAssociationSignals === 'object'
+            ? raw.ownerAssociationSignals
+            : null,
       };
     }
     return {
@@ -2854,6 +3004,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       ownerIdentifiers: [],
       ownerSourceLocation: null,
       ownerDistanceBytes: null,
+      ownerAssociationSignals: null,
     };
   };
   const scoreCandidateComponents = function (candidate) {
@@ -3020,6 +3171,19 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
       strategyOptions: {
         allowRelaxedOwnerAssociation: true,
         relaxedRequiresSingleOwnerGroup: false,
+        enableWeakOwnerLinking: false,
+      },
+    },
+    {
+      name: 'vector-image',
+      version: 'vector_v3_anchor_poor',
+      fn: extractFromVectorImage,
+      defaultSource: 'vector-image-object',
+      onlyWhen: function () { return driftFlags.indexOf('missing_key_anchors') !== -1; },
+      strategyOptions: {
+        allowRelaxedOwnerAssociation: true,
+        relaxedRequiresSingleOwnerGroup: false,
+        enableWeakOwnerLinking: true,
       },
     },
     { name: 'licdn-regex', version: 'licdn_v1', fn: extractFromLicdnRegex, defaultSource: 'licdn-root+artifact' },
@@ -3052,6 +3216,12 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
               ? strategyDef.strategyOptions.relaxedRequiresSingleOwnerGroup
               : extractOptions.relaxedRequiresSingleOwnerGroup
           ),
+          enableWeakOwnerLinking: !!(
+            strategyDef.strategyOptions &&
+            Object.prototype.hasOwnProperty.call(strategyDef.strategyOptions, 'enableWeakOwnerLinking')
+              ? strategyDef.strategyOptions.enableWeakOwnerLinking
+              : false
+          ),
         }),
         name,
         slug,
@@ -3079,6 +3249,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           candidatePathTail: url ? getUrlPathTail(url) : null,
           candidateSource: name,
           confidenceScore: null,
+          ownerAssociationSignals: result.ownerAssociationSignals || null,
         });
       }
       if (!url) {
@@ -3110,6 +3281,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         ownerIdentifiers: result.ownerIdentifiers || [],
         ownerSourceLocation: result.ownerSourceLocation || null,
         ownerDistanceBytes: result.ownerDistanceBytes,
+        ownerAssociationSignals: result.ownerAssociationSignals || null,
         confidence: 0,
         reasons: result.reasons.concat(reasons),
         len: url.length,
@@ -3146,6 +3318,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
             withinFallbackWindow:
               typeof candidate.ownerDistanceBytes === 'number' ? candidate.ownerDistanceBytes <= OWNER_PROXIMITY_FALLBACK_BYTES : null,
           },
+          ownerAssociationSignals: candidate.ownerAssociationSignals || null,
           urlPrefix: candidate.urlPrefix,
           urlHash: candidate.urlHash,
           acceptance: {
@@ -3194,6 +3367,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
           candidatePathTail: getUrlPathTail(candidate.url),
           candidateSource: name,
           confidenceScore: candidate.confidence,
+          ownerAssociationSignals: candidate.ownerAssociationSignals || null,
         });
       }
     } catch (err) {

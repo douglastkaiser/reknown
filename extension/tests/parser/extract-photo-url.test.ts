@@ -109,6 +109,15 @@ describe('extractPhotoUrl parser fixtures', () => {
     expect(result.rejectReason).not.toBe('reject.owner_mismatch');
   });
 
+  it('uses drift-only weak owner linking for anchor-poor vector html', async () => {
+    const api = loadParserHarness();
+    const result = await api.extractPhotoUrl(loadFixture('anchor-poor-vector-drift.html'), 'target-slug');
+
+    expect(result.url).toContain('D4D03AQTARGETPOOR');
+    expect(result.source).toBe('vector-image-object');
+    expect(result.rejectReason).not.toBe('reject.owner_mismatch');
+  });
+
   it('reports truncated_root_only when only root urls are present', async () => {
     const api = loadParserHarness();
     const result = await api.extractPhotoUrl(loadFixture('truncated-root-only.html'), 'target-slug');
