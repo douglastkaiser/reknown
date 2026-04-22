@@ -3722,6 +3722,29 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
   };
 }
 
+function getNoPhotoRetrySignal(html, slug, extraction, rejectReason, dominantRejectReason) {
+  const compactBundle = compactNoPhotoFoundBundle(html, slug, extraction);
+  const dominantOwnerIdentifier =
+    compactBundle &&
+    Array.isArray(compactBundle.topOwnerIdentifiers) &&
+    compactBundle.topOwnerIdentifiers[0] &&
+    typeof compactBundle.topOwnerIdentifiers[0].publicIdentifier === 'string'
+      ? compactBundle.topOwnerIdentifiers[0].publicIdentifier
+      : null;
+  const normalizedReject =
+    normalizeExplicitRejectCode(rejectReason) ||
+    normalizeExplicitRejectCode(dominantRejectReason) ||
+    rejectReason ||
+    dominantRejectReason ||
+    'no_photo_found';
+  return {
+    htmlFingerprint: compactBundle && compactBundle.htmlFingerprint ? compactBundle.htmlFingerprint : null,
+    dominantOwnerIdentifier: dominantOwnerIdentifier,
+    rejectionCode: normalizedReject,
+    compactBundle: compactBundle,
+  };
+}
+
 async function enrichOne(person, context) {
   const requestIdForDebug = context && context.requestId ? String(context.requestId) : '';
   applyDebugContext({ requestId: requestIdForDebug, slug: null });
@@ -4183,11 +4206,19 @@ async function enrichOne(person, context) {
     );
   }
   if (!photoUrl) {
+    const firstPassSignal = getNoPhotoRetrySignal(
+      html,
+      slug,
+      extraction,
+      extractionRejectReason,
+      extractionDominantRejectReason,
+    );
     const driftTriggered = extractionDriftFlags.indexOf('missing_key_anchors') !== -1;
     const retryPlan = driftTriggered
       ? ['profile_retry', 'relaxed_owner', 'overlay']
       : ['profile_retry', 'overlay', 'relaxed_owner'];
     const executed = [];
+    let failFastDiagnosticCode = null;
     const jitterMs = 35 + Math.floor(Math.random() * 70);
     executed.push('profile_retry');
     await new Promise(function (resolve) { setTimeout(resolve, jitterMs); });
@@ -4251,8 +4282,53 @@ async function enrichOne(person, context) {
         return finalizeResult({ status: 'error', error: 'cancelled' });
       }
     }
+    if (!photoUrl) {
+      const retrySignal = getNoPhotoRetrySignal(
+        html,
+        slug,
+        extraction,
+        extractionRejectReason,
+        extractionDominantRejectReason,
+      );
+      const firstFingerprint = firstPassSignal && firstPassSignal.htmlFingerprint
+        ? firstPassSignal.htmlFingerprint
+        : null;
+      const retryFingerprint = retrySignal && retrySignal.htmlFingerprint
+        ? retrySignal.htmlFingerprint
+        : null;
+      const sameHtmlFingerprint = !!(
+        firstFingerprint &&
+        retryFingerprint &&
+        firstFingerprint.length === retryFingerprint.length &&
+        firstFingerprint.hash32 === retryFingerprint.hash32
+      );
+      const sameDominantOwnerIdentifier =
+        (firstPassSignal ? firstPassSignal.dominantOwnerIdentifier : null) ===
+        (retrySignal ? retrySignal.dominantOwnerIdentifier : null);
+      const sameRejectionCode =
+        (firstPassSignal ? firstPassSignal.rejectionCode : null) ===
+        (retrySignal ? retrySignal.rejectionCode : null);
+      if (
+        sameHtmlFingerprint &&
+        sameDominantOwnerIdentifier &&
+        sameRejectionCode &&
+        retrySignal.rejectionCode === 'reject.owner_mismatch'
+      ) {
+        failFastDiagnosticCode = 'owner_mismatch_stable';
+        console.warn(
+          '[reknown-ext] retry fail-fast',
+          JSON.stringify({
+            code: failFastDiagnosticCode,
+            htmlFingerprint: retryFingerprint,
+            dominantOwnerIdentifier: retrySignal.dominantOwnerIdentifier,
+            rejectionCode: retrySignal.rejectionCode,
+            executed: executed.slice(),
+          }),
+        );
+      }
+    }
     const runRelaxedOwnerBeforeOverlay = driftTriggered;
-    if (!photoUrl && runRelaxedOwnerBeforeOverlay) {
+    if (!photoUrl && !failFastDiagnosticCode && runRelaxedOwnerBeforeOverlay) {
       executed.push('relaxed_owner');
       extraction = await extractPhotoUrl(html, slug, eventBase, {
         includeOverlayFallback: false,
@@ -4280,7 +4356,7 @@ async function enrichOne(person, context) {
           ? extraction.driftFlags.slice(0, 8)
           : extractionDriftFlags;
     }
-    if (!photoUrl) {
+    if (!photoUrl && !failFastDiagnosticCode) {
       executed.push('overlay');
       extraction = await extractPhotoUrl(html, slug, eventBase, {
         includeOverlayFallback: true,
@@ -4304,7 +4380,7 @@ async function enrichOne(person, context) {
           ? extraction.driftFlags.slice(0, 8)
           : extractionDriftFlags;
     }
-    if (!photoUrl && !runRelaxedOwnerBeforeOverlay) {
+    if (!photoUrl && !failFastDiagnosticCode && !runRelaxedOwnerBeforeOverlay) {
       executed.push('relaxed_owner');
       extraction = await extractPhotoUrl(html, slug, eventBase, {
         includeOverlayFallback: false,
@@ -4336,8 +4412,13 @@ async function enrichOne(person, context) {
       'retryPlan=' + JSON.stringify(retryPlan),
       'executed=' + JSON.stringify(executed),
       'driftFlags=' + JSON.stringify(extractionDriftFlags),
+      'failFastDiagnosticCode=' + (failFastDiagnosticCode || ''),
       'finalDecision=' + (photoUrl ? 'photo_found' : 'no_photo_found'),
     );
+    if (!photoUrl && failFastDiagnosticCode) {
+      extractionRejectReason = failFastDiagnosticCode;
+      extractionDominantRejectReason = failFastDiagnosticCode;
+    }
   }
   if (!photoUrl) {
     const compactBundle = compactNoPhotoFoundBundle(html, slug, extraction);
@@ -4368,7 +4449,11 @@ async function enrichOne(person, context) {
     return finalizeResult({
       status: 'error',
       error: {
-        code: 'no_photo_found',
+        code:
+          extractionRejectReason === 'owner_mismatch_stable' ||
+          extractionDominantRejectReason === 'owner_mismatch_stable'
+            ? 'owner_mismatch_stable'
+            : 'no_photo_found',
         reason: extractionRejectReason || extractionDominantRejectReason || null,
         dominantRejectReason: extractionDominantRejectReason || extractionRejectReason || null,
       },
