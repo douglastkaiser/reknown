@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  PHOTO_INTEGRITY_LEGACY_SPEC,
+  PHOTO_INTEGRITY_SPEC_V1,
+  computeDataUrlSha256PrefixBySpec,
+  matchesPhotoIntegritySpec,
+  type PhotoIntegritySpec,
+} from '../lib/photo-integrity';
 import type { Person } from '../types';
 
 export type EnrichErrorCode =
@@ -94,25 +101,42 @@ function normalizeEnrichError(
   return { error: 'unknown_error' };
 }
 
-async function computeDataUrlSha256Prefix(dataUrl: string, prefixLen = 12): Promise<string | null> {
-  try {
-    const commaIdx = dataUrl.indexOf(',');
-    if (commaIdx === -1) return null;
-    const b64 = dataUrl.slice(commaIdx + 1);
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    const digestBytes = new Uint8Array(digest);
-    let hex = '';
-    for (let i = 0; i < digestBytes.length; i++) {
-      hex += digestBytes[i].toString(16).padStart(2, '0');
-      if (hex.length >= prefixLen) break;
-    }
-    return hex.slice(0, prefixLen);
-  } catch {
-    return null;
+
+function resolveIntegritySpecFromPayload(payload: {
+  photoHashAlgorithm?: string;
+  photoHashInput?: string;
+  photoHashPrefixLen?: number;
+}): { spec: PhotoIntegritySpec; isLegacyPayload: boolean } {
+  const payloadSpec: Partial<PhotoIntegritySpec> = {
+    photoHashAlgorithm: payload.photoHashAlgorithm as PhotoIntegritySpec['photoHashAlgorithm'] | undefined,
+    photoHashInput: payload.photoHashInput as PhotoIntegritySpec['photoHashInput'] | undefined,
+    photoHashPrefixLen: payload.photoHashPrefixLen,
+  };
+  const hasAnyMetadata =
+    typeof payload.photoHashAlgorithm === 'string' ||
+    typeof payload.photoHashInput === 'string' ||
+    typeof payload.photoHashPrefixLen === 'number';
+
+  if (!hasAnyMetadata) {
+    return { spec: PHOTO_INTEGRITY_LEGACY_SPEC, isLegacyPayload: true };
   }
+
+  if (!matchesPhotoIntegritySpec(payloadSpec)) {
+    console.warn('[reknown] integrity_metadata_mismatch', {
+      expected: PHOTO_INTEGRITY_SPEC_V1,
+      received: payloadSpec,
+    });
+  }
+
+  if (
+    payloadSpec.photoHashAlgorithm === 'sha256' &&
+    (payloadSpec.photoHashInput === 'data_url_utf8' || payloadSpec.photoHashInput === 'decoded_bytes') &&
+    typeof payloadSpec.photoHashPrefixLen === 'number'
+  ) {
+    return { spec: payloadSpec as PhotoIntegritySpec, isLegacyPayload: false };
+  }
+
+  return { spec: PHOTO_INTEGRITY_SPEC_V1, isLegacyPayload: false };
 }
 
 export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions) {
@@ -144,6 +168,9 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             intendedPersonId?: string | null;
             slug?: string | null;
             photoSha256Prefix?: string | null;
+            photoHashAlgorithm?: string;
+            photoHashInput?: string;
+            photoHashPrefixLen?: number;
             photoDataUrlLen?: number;
             selectedUrlFingerprint?: string | null;
             error?:
@@ -201,7 +228,16 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
           const rawUrl = data.photoUrl;
           const photoDataUrlLen = typeof data.photoDataUrlLen === 'number' ? data.photoDataUrlLen : 0;
           const lengthMatches = dataUrl.length === photoDataUrlLen;
-          void computeDataUrlSha256Prefix(dataUrl, 12).then((computedPrefix) => {
+          const { spec: integritySpec, isLegacyPayload } = resolveIntegritySpecFromPayload(data);
+
+          if (isLegacyPayload) {
+            console.warn('[reknown] integrity_metadata_deprecated_missing', {
+              expected: PHOTO_INTEGRITY_SPEC_V1,
+              fallback: PHOTO_INTEGRITY_LEGACY_SPEC,
+            });
+          }
+
+          void computeDataUrlSha256PrefixBySpec(dataUrl, integritySpec).then((computedPrefix) => {
             const expectedPrefix = data.photoSha256Prefix ?? null;
             const hashMatches =
               expectedPrefix === null ? computedPrefix === null : expectedPrefix === computedPrefix;
@@ -212,6 +248,9 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
               'intendedPersonId=' + (intendedPersonId || ''),
               'slug=' + (data.slug || ''),
               'photoSha256Prefix=' + (data.photoSha256Prefix || ''),
+              'photoHashAlgorithm=' + (data.photoHashAlgorithm || ''),
+              'photoHashInput=' + (data.photoHashInput || ''),
+              'photoHashPrefixLen=' + (typeof data.photoHashPrefixLen === 'number' ? data.photoHashPrefixLen : 0),
               'photoDataUrlLen=' + photoDataUrlLen,
               'selectedUrlFingerprint=' + (data.selectedUrlFingerprint || ''),
               'lengthMatches=' + lengthMatches,
@@ -225,6 +264,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
                 hashMatches,
                 expectedPhotoSha256Prefix: expectedPrefix,
                 computedPhotoSha256Prefix: computedPrefix,
+                integritySpec,
               });
             }
           });
