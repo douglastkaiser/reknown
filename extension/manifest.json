@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "name": "reknown — LinkedIn Photo Enricher",
+  "name": "reknown \u2014 LinkedIn Photo Enricher",
   "version": "1.0.4",
   "description": "Fetches LinkedIn profile photos for your reknown face-recall deck",
   "browser_specific_settings": {
@@ -16,7 +16,10 @@
     "*://*.licdn.com/*"
   ],
   "background": {
-    "scripts": ["background.js"],
+    "scripts": [
+      "photo-integrity.js",
+      "background.js"
+    ],
     "persistent": false
   },
   "content_scripts": [
@@ -38,7 +41,9 @@
         "https://douglastkaiser.com/*",
         "https://www.douglastkaiser.com/*"
       ],
-      "js": ["content-script.js"],
+      "js": [
+        "content-script.js"
+      ],
       "run_at": "document_idle"
     }
   ],

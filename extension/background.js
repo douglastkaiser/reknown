@@ -3719,16 +3719,37 @@ function getLinkedInSlugFromProfileUrl(rawUrl) {
   return slugMatch ? decodeURIComponent(slugMatch[1]) : '';
 }
 
-async function computeBlobSha256Prefix(blob, prefixLen) {
-  const len = Math.max(8, Math.min(12, prefixLen || 10));
+function getPhotoIntegritySpec() {
+  const spec =
+    globalThis.REKNOWN_PHOTO_INTEGRITY && globalThis.REKNOWN_PHOTO_INTEGRITY.PHOTO_INTEGRITY_SPEC
+      ? globalThis.REKNOWN_PHOTO_INTEGRITY.PHOTO_INTEGRITY_SPEC
+      : null;
+  if (!spec) {
+    return {
+      photoHashAlgorithm: 'sha256',
+      photoHashInput: 'data_url_utf8',
+      photoHashPrefixLen: 12,
+    };
+  }
+  return spec;
+}
+
+async function computeDataUrlSha256Prefix(dataUrl, prefixLen) {
+  const len = Math.max(8, Math.min(12, prefixLen || 12));
   try {
-    if (!blob || typeof blob.arrayBuffer !== 'function' || !globalThis.crypto || !globalThis.crypto.subtle) return null;
-    const buffer = await blob.arrayBuffer();
-    const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
-    const bytes = new Uint8Array(digest);
+    if (
+      globalThis.REKNOWN_PHOTO_INTEGRITY &&
+      typeof globalThis.REKNOWN_PHOTO_INTEGRITY.computePhotoHashPrefixFromDataUrl === 'function'
+    ) {
+      return await globalThis.REKNOWN_PHOTO_INTEGRITY.computePhotoHashPrefixFromDataUrl(dataUrl, len);
+    }
+    if (!globalThis.crypto || !globalThis.crypto.subtle) return null;
+    const bytes = new TextEncoder().encode(String(dataUrl || '').normalize('NFC'));
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    const hashBytes = new Uint8Array(digest);
     let hex = '';
-    for (let i = 0; i < bytes.length; i++) {
-      hex += bytes[i].toString(16).padStart(2, '0');
+    for (let i = 0; i < hashBytes.length; i++) {
+      hex += hashBytes[i].toString(16).padStart(2, '0');
       if (hex.length >= len) break;
     }
     return hex.substring(0, len);
@@ -4690,8 +4711,9 @@ async function enrichOne(person, context) {
     bytesDownloaded: blob.size,
   }));
   try {
-    const photoSha256Prefix = await computeBlobSha256Prefix(blob, 12);
     const dataUrl = await resizeBlob(blob);
+    const integritySpec = getPhotoIntegritySpec();
+    const photoSha256Prefix = await computeDataUrlSha256Prefix(dataUrl, integritySpec.photoHashPrefixLen);
     if (mutableState) {
       mutableState.photoHash = photoSha256Prefix;
       mutableState.photoDataUrl = dataUrl;
@@ -4919,6 +4941,9 @@ async function runBatch(requestId, people, tabId) {
           intendedPersonId: person && person.id ? String(person.id) : null,
           slug: personSlug,
           photoSha256Prefix: successPhotoSha256Prefix,
+          photoHashAlgorithm: getPhotoIntegritySpec().photoHashAlgorithm,
+          photoHashInput: getPhotoIntegritySpec().photoHashInput,
+          photoHashPrefixLen: getPhotoIntegritySpec().photoHashPrefixLen,
           photoDataUrlLen: successDataUrlLen,
           selectedUrlFingerprint: successSelectedUrlFingerprint,
         });
