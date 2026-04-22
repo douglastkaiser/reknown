@@ -3910,47 +3910,39 @@ async function enrichOne(person, context) {
   const profileFetchTimeoutMs = 15000;
   const photoFetchTimeoutMs = 20000;
   let fetchProfileDurationMs = null;
-  const mutableState =
-    context && context.mutableState && typeof context.mutableState === 'object'
-      ? context.mutableState
+  const enrichLocalState = {
+    selectedCandidate: null,
+    photoDataUrl: null,
+    photoBlob: null,
+    photoHash: null,
+  };
+  const assertionMeta =
+    context && context.assertionMeta && typeof context.assertionMeta === 'object'
+      ? context.assertionMeta
       : null;
-  let selectedCandidateSourceInput = null;
-  if (mutableState) {
-    selectedCandidateSourceInput =
-      mutableState.selectedCandidate &&
-      typeof mutableState.selectedCandidate === 'object' &&
-      typeof mutableState.selectedCandidate.source === 'string' &&
-      mutableState.selectedCandidate.source
-        ? mutableState.selectedCandidate.source
-        : null;
-    if (
-      mutableState.previousPersonId &&
-      mutableState.previousPersonId !== eventBase.personId &&
-      !!mutableState.photoDataUrl
-    ) {
-      console.warn(
-        '[reknown-ext] state_leak_detected',
-        'traceId=' + (traceId || ''),
-        'personId=' + (eventBase.personId || ''),
-        'prevPersonId=' + mutableState.previousPersonId,
-        'stalePhotoDataUrlLen=' + String(mutableState.photoDataUrl.length || 0),
-      );
-    }
-    console.log(
-      '[reknown-ext] enrichOne mutable-state start',
+  if (
+    assertionMeta &&
+    assertionMeta.intendedPersonId &&
+    eventBase.personId &&
+    assertionMeta.intendedPersonId !== eventBase.personId
+  ) {
+    console.warn(
+      '[reknown-ext] assertion.person_id_mismatch',
       'traceId=' + (traceId || ''),
-      'personId=' + (eventBase.personId || ''),
-      'selectedCandidate=' + JSON.stringify(mutableState.selectedCandidate),
-      'photoDataUrl=' + (mutableState.photoDataUrl ? ('len:' + mutableState.photoDataUrl.length) : null),
-      'photoBlob=' + (mutableState.photoBlob ? ('size:' + mutableState.photoBlob.size) : null),
-      'photoHash=' + (mutableState.photoHash || null),
+      'intendedPersonId=' + assertionMeta.intendedPersonId,
+      'actualPersonId=' + eventBase.personId,
     );
-    mutableState.selectedCandidate = null;
-    mutableState.photoDataUrl = null;
-    mutableState.photoBlob = null;
-    mutableState.photoHash = null;
-    mutableState.previousPersonId = eventBase.personId;
   }
+  const selectedCandidateSourceInput = null;
+  console.log(
+    '[reknown-ext] enrichOne local-state start',
+    'traceId=' + (traceId || ''),
+    'personId=' + (eventBase.personId || ''),
+    'selectedCandidate=' + JSON.stringify(enrichLocalState.selectedCandidate),
+    'photoDataUrl=' + (enrichLocalState.photoDataUrl ? ('len:' + enrichLocalState.photoDataUrl.length) : null),
+    'photoBlob=' + (enrichLocalState.photoBlob ? ('size:' + enrichLocalState.photoBlob.size) : null),
+    'photoHash=' + (enrichLocalState.photoHash || null),
+  );
   function finalizeResult(resultObj) {
     if (
       resultObj &&
@@ -3959,23 +3951,24 @@ async function enrichOne(person, context) {
     ) {
       resultObj.fetchProfileDurationMs = fetchProfileDurationMs;
     }
-    if (!mutableState) return resultObj;
-    const isNewResultObject = mutableState.lastResultObject !== resultObj;
-    const resultPhotoBufferRef = resultObj && typeof resultObj === 'object' ? resultObj.photoDataUrl : null;
-    const isPhotoBufferShared = !!(
-      resultPhotoBufferRef &&
-      mutableState.lastPhotoBufferRef &&
-      resultPhotoBufferRef === mutableState.lastPhotoBufferRef
-    );
-    console.log(
-      '[reknown-ext] enrichOne result refs',
-      'traceId=' + (traceId || ''),
-      'personId=' + (eventBase.personId || ''),
-      'isNewResultObject=' + isNewResultObject,
-      'isPhotoBufferShared=' + isPhotoBufferShared,
-    );
-    mutableState.lastResultObject = resultObj;
-    mutableState.lastPhotoBufferRef = resultPhotoBufferRef || null;
+    if (!resultObj || typeof resultObj !== 'object') return resultObj;
+    const selectedUrlFingerprint =
+      enrichLocalState.selectedCandidate &&
+      typeof enrichLocalState.selectedCandidate === 'object' &&
+      typeof enrichLocalState.selectedCandidate.selectedUrlFingerprint === 'string'
+        ? enrichLocalState.selectedCandidate.selectedUrlFingerprint
+        : null;
+    resultObj.progressMeta = Object.freeze({
+      photoSha256Prefix:
+        enrichLocalState.photoHash && typeof enrichLocalState.photoHash === 'string'
+          ? enrichLocalState.photoHash
+          : null,
+      photoDataUrlLen:
+        enrichLocalState.photoDataUrl && typeof enrichLocalState.photoDataUrl === 'string'
+          ? enrichLocalState.photoDataUrl.length
+          : 0,
+      selectedUrlFingerprint: selectedUrlFingerprint,
+    });
     return resultObj;
   }
   function withRequestController(stage, work) {
@@ -4316,12 +4309,10 @@ async function enrichOne(person, context) {
     extraction && typeof extraction === 'object' && Array.isArray(extraction.driftFlags)
       ? extraction.driftFlags.slice(0, 8)
       : [];
-  if (mutableState) {
-    mutableState.selectedCandidate =
-      extraction && typeof extraction === 'object' && Object.prototype.hasOwnProperty.call(extraction, 'selectedCandidate')
-        ? extraction.selectedCandidate
-        : null;
-  }
+  enrichLocalState.selectedCandidate =
+    extraction && typeof extraction === 'object' && Object.prototype.hasOwnProperty.call(extraction, 'selectedCandidate')
+      ? extraction.selectedCandidate
+      : null;
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] extractPhotoUrl result:',
@@ -4692,7 +4683,7 @@ async function enrichOne(person, context) {
     }));
     return finalizeResult({ status: 'error', error: 'fetch_failed' });
   }
-  if (mutableState) mutableState.photoBlob = blob;
+  enrichLocalState.photoBlob = blob;
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] photo blob',
@@ -4714,10 +4705,8 @@ async function enrichOne(person, context) {
     const dataUrl = await resizeBlob(blob);
     const integritySpec = getPhotoIntegritySpec();
     const photoSha256Prefix = await computeDataUrlSha256Prefix(dataUrl, integritySpec.photoHashPrefixLen);
-    if (mutableState) {
-      mutableState.photoHash = photoSha256Prefix;
-      mutableState.photoDataUrl = dataUrl;
-    }
+    enrichLocalState.photoHash = photoSha256Prefix;
+    enrichLocalState.photoDataUrl = dataUrl;
     if (DEBUG_VERBOSE) {
       // Message-passing to the tab has a size cap; huge data URLs can be
       // silently dropped on some browsers. Flag that here so we see it
@@ -4773,15 +4762,7 @@ async function runBatch(requestId, people, tabId) {
   const batchStats = {
     lowConfidenceFallbackAcceptedCount: 0,
   };
-  const enrichMutableState = {
-    previousPersonId: null,
-    selectedCandidate: null,
-    photoDataUrl: null,
-    photoBlob: null,
-    photoHash: null,
-    lastResultObject: null,
-    lastPhotoBufferRef: null,
-  };
+  let previousProgressMeta = null;
   activeBatches.set(requestId, batch);
   const batchStart = Date.now();
   console.log(
@@ -4840,39 +4821,26 @@ async function runBatch(requestId, people, tabId) {
         'elapsedBatchMs=' + (personStart - batchStart),
       );
       if (
-        enrichMutableState.previousPersonId &&
-        enrichMutableState.previousPersonId !== personIdForTrace &&
-        !!enrichMutableState.photoDataUrl
+        previousProgressMeta &&
+        previousProgressMeta.intendedPersonId &&
+        previousProgressMeta.intendedPersonId !== personIdForTrace &&
+        previousProgressMeta.photoDataUrlLen > 0
       ) {
         console.warn(
-          '[reknown-ext] state_leak_detected',
+          '[reknown-ext] assertion.previous_progress_meta',
           'traceId=' + traceId,
           'personId=' + personIdForTrace,
-          'prevPersonId=' + enrichMutableState.previousPersonId,
-          'stalePhotoDataUrlLen=' + String(enrichMutableState.photoDataUrl.length || 0),
+          'previousPersonId=' + previousProgressMeta.intendedPersonId,
+          'previousPhotoDataUrlLen=' + String(previousProgressMeta.photoDataUrlLen || 0),
         );
       }
-      console.log(
-        '[reknown-ext] enrich mutable-state start',
-        'traceId=' + traceId,
-        'personId=' + personIdForTrace,
-        'selectedCandidate=' + JSON.stringify(enrichMutableState.selectedCandidate),
-        'photoDataUrl=' + (enrichMutableState.photoDataUrl ? ('len:' + enrichMutableState.photoDataUrl.length) : null),
-        'photoBlob=' + (enrichMutableState.photoBlob ? ('size:' + enrichMutableState.photoBlob.size) : null),
-        'photoHash=' + (enrichMutableState.photoHash || null),
-      );
-      enrichMutableState.selectedCandidate = null;
-      enrichMutableState.photoDataUrl = null;
-      enrichMutableState.photoBlob = null;
-      enrichMutableState.photoHash = null;
-      enrichMutableState.previousPersonId = personIdForTrace;
-      const immutableProgressMeta = {
+      const immutableProgressMeta = Object.freeze({
         intendedPersonId: person && person.id ? String(person.id) : null,
         slug: personSlug,
         photoSha256Prefix: null,
         photoDataUrlLen: 0,
         selectedUrlFingerprint: null,
-      };
+      });
       sendToTab(tabId, {
         type: 'REKNOWN_ENRICH_PROGRESS',
         requestId,
@@ -4892,7 +4860,7 @@ async function runBatch(requestId, people, tabId) {
         result = await enrichOne(person, {
           requestId,
           traceId: traceId,
-          mutableState: enrichMutableState,
+          assertionMeta: immutableProgressMeta,
           batchStats,
           batch,
         });
@@ -4918,16 +4886,9 @@ async function runBatch(requestId, people, tabId) {
         success++;
         const successDataUrlLen =
           result && typeof result.photoDataUrl === 'string' ? result.photoDataUrl.length : 0;
-        const successPhotoSha256Prefix =
-          enrichMutableState.photoHash && typeof enrichMutableState.photoHash === 'string'
-            ? enrichMutableState.photoHash
-            : null;
-        const successSelectedUrlFingerprint =
-          enrichMutableState.selectedCandidate &&
-          typeof enrichMutableState.selectedCandidate === 'object' &&
-          typeof enrichMutableState.selectedCandidate.selectedUrlFingerprint === 'string'
-            ? enrichMutableState.selectedCandidate.selectedUrlFingerprint
-            : null;
+        const resultProgressMeta = Object.freeze(
+          Object.assign({}, immutableProgressMeta, result && result.progressMeta && typeof result.progressMeta === 'object' ? result.progressMeta : {}),
+        );
         sendToTab(tabId, {
           type: 'REKNOWN_ENRICH_PROGRESS',
           requestId,
@@ -4940,14 +4901,15 @@ async function runBatch(requestId, people, tabId) {
           total: people.length,
           intendedPersonId: person && person.id ? String(person.id) : null,
           slug: personSlug,
-          photoSha256Prefix: successPhotoSha256Prefix,
+          photoSha256Prefix: resultProgressMeta.photoSha256Prefix,
           photoHashAlgorithm: getPhotoIntegritySpec().photoHashAlgorithm,
           photoHashInput: getPhotoIntegritySpec().photoHashInput,
           photoHashPrefixLen: getPhotoIntegritySpec().photoHashPrefixLen,
-          photoDataUrlLen: successDataUrlLen,
-          selectedUrlFingerprint: successSelectedUrlFingerprint,
+          photoDataUrlLen: resultProgressMeta.photoDataUrlLen || successDataUrlLen,
+          selectedUrlFingerprint: resultProgressMeta.selectedUrlFingerprint,
         });
         logStageBoundary(personStageContext, 'result.emitted', personStart);
+        previousProgressMeta = resultProgressMeta;
       } else {
         failed++;
         const progressErrorMeta = getProgressErrorMeta(result ? result.error : null);
@@ -4958,12 +4920,9 @@ async function runBatch(requestId, people, tabId) {
             (failuresByDominantRejectReason[progressErrorMeta.dominantRejectReason] || 0) + 1;
         }
         if (!firstFailureTimestamp) firstFailureTimestamp = new Date().toISOString();
-        const errorSelectedUrlFingerprint =
-          enrichMutableState.selectedCandidate &&
-          typeof enrichMutableState.selectedCandidate === 'object' &&
-          typeof enrichMutableState.selectedCandidate.selectedUrlFingerprint === 'string'
-            ? enrichMutableState.selectedCandidate.selectedUrlFingerprint
-            : null;
+        const resultProgressMeta = Object.freeze(
+          Object.assign({}, immutableProgressMeta, result && result.progressMeta && typeof result.progressMeta === 'object' ? result.progressMeta : {}),
+        );
         sendToTab(tabId, {
           type: 'REKNOWN_ENRICH_PROGRESS',
           requestId,
@@ -4978,9 +4937,10 @@ async function runBatch(requestId, people, tabId) {
           slug: personSlug,
           photoSha256Prefix: null,
           photoDataUrlLen: 0,
-          selectedUrlFingerprint: errorSelectedUrlFingerprint,
+          selectedUrlFingerprint: resultProgressMeta.selectedUrlFingerprint,
         });
         logStageBoundary(personStageContext, 'result.emitted', personStart);
+        previousProgressMeta = resultProgressMeta;
         if (result.fatal) {
           const cooldownMeta =
             result.error === 'rate_limited' ? setRateLimitCooldown() : getRateLimitCooldownMeta();
