@@ -423,6 +423,7 @@ function emitBatchSummaryLog(args) {
     success: Number(data.success) || 0,
     failed: Number(data.failed) || 0,
     failuresByCode: failuresByCode,
+    internalErrorFailures: Number(failuresByCode.internal_error) || 0,
     failuresByDominantRejectReason: failuresByDominantRejectReason,
     fetchTimingMs: {
       p50: getPercentile(fetchDurationsMs, 50),
@@ -502,6 +503,44 @@ function isFetchTimeoutError(err) {
 
 function isFetchCancelledError(err) {
   return !!(err && typeof err === 'object' && err.code === 'fetch_cancelled');
+}
+
+function getInternalErrorSubreason(err) {
+  const name = err && typeof err.name === 'string' ? err.name : '';
+  if (name === 'ReferenceError') return 'reference_error';
+  if (name === 'TypeError') return 'type_error';
+  return 'unexpected_exception';
+}
+
+function trimErrorStack(err, maxLines) {
+  const limit = Math.max(1, Number(maxLines) || 6);
+  const stack = err && typeof err.stack === 'string' ? err.stack : '';
+  if (!stack) return null;
+  return stack
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, limit)
+    .join('\n');
+}
+
+function createInternalErrorResult(err) {
+  return {
+    code: 'internal_error',
+    reason: getInternalErrorSubreason(err),
+  };
+}
+
+function emitInternalExceptionTelemetry(stage, context, err) {
+  const ctx = context && typeof context === 'object' ? context : {};
+  debugEvent('internal.exception', {
+    stage: String(stage || ''),
+    requestId: ctx.requestId != null ? String(ctx.requestId) : null,
+    personId: ctx.personId != null ? String(ctx.personId) : null,
+    slug: ctx.slug != null ? String(ctx.slug) : null,
+    exceptionName: err && typeof err.name === 'string' ? err.name : 'Error',
+    exceptionMessage: err && typeof err.message === 'string' ? err.message : String(err),
+  });
 }
 
 function toPathTemplate(pathname) {
@@ -4794,7 +4833,7 @@ async function runBatch(requestId, people, tabId) {
   }
   let success = 0;
   let failed = 0;
-  const failuresByCode = {};
+  const failuresByCode = { internal_error: 0 };
   const failuresByDominantRejectReason = {};
   const fetchDurationsMs = [];
   let firstFailureTimestamp = null;
@@ -4865,8 +4904,26 @@ async function runBatch(requestId, people, tabId) {
           batch,
         });
       } catch (err) {
-        console.error('[reknown-ext] unexpected error', err);
-        result = { status: 'error', error: 'fetch_failed' };
+        const stage = 'runBatch.enrichOne';
+        const errorStackPreview = trimErrorStack(err, 7);
+        console.error(
+          '[reknown-ext] unexpected exception in enrichOne',
+          JSON.stringify({
+            stage: stage,
+            requestId: requestId,
+            personId: person && person.id ? String(person.id) : null,
+            slug: personSlug || null,
+            exceptionName: err && err.name ? err.name : 'Error',
+            exceptionMessage: err && err.message ? err.message : String(err),
+            stack: errorStackPreview,
+          }),
+        );
+        emitInternalExceptionTelemetry(stage, {
+          requestId: requestId,
+          personId: person && person.id ? String(person.id) : null,
+          slug: personSlug || null,
+        }, err);
+        result = { status: 'error', error: createInternalErrorResult(err) };
       }
       const resultErrorLog =
         result && typeof result.error === 'object' && result.error !== null
@@ -5064,6 +5121,23 @@ async function runBatch(requestId, people, tabId) {
       fetchDurationsMs: fetchDurationsMs,
       firstFailureTimestamp: firstFailureTimestamp,
     });
+  } catch (err) {
+    const stage = 'runBatch.main';
+    const errorStackPreview = trimErrorStack(err, 7);
+    console.error(
+      '[reknown-ext] runBatch unhandled exception',
+      JSON.stringify({
+        stage: stage,
+        requestId: requestId,
+        personId: null,
+        slug: null,
+        exceptionName: err && err.name ? err.name : 'Error',
+        exceptionMessage: err && err.message ? err.message : String(err),
+        stack: errorStackPreview,
+      }),
+    );
+    emitInternalExceptionTelemetry(stage, { requestId: requestId, personId: null, slug: null }, err);
+    throw err;
   } finally {
     activeBatches.delete(requestId);
     // Defensively close any keep-alive ports still open for this batch, in
@@ -5216,7 +5290,21 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       );
     }
     runBatch(requestId, people, tabId).catch((err) => {
-      console.error('[reknown-ext] runBatch crashed', err);
+      const stage = 'runBatch.top_level';
+      const errorStackPreview = trimErrorStack(err, 7);
+      console.error(
+        '[reknown-ext] runBatch crashed',
+        JSON.stringify({
+          stage: stage,
+          requestId: requestId,
+          personId: null,
+          slug: null,
+          exceptionName: err && err.name ? err.name : 'Error',
+          exceptionMessage: err && err.message ? err.message : String(err),
+          stack: errorStackPreview,
+        }),
+      );
+      emitInternalExceptionTelemetry(stage, { requestId: requestId, personId: null, slug: null }, err);
     });
     sendResponse({ ok: true, requestId, cooldown: cooldownMeta });
     return;
