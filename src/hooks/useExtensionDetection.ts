@@ -74,17 +74,55 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       setExtensionAvailable(true);
     }
 
+    const KNOWN_APP_ORIGINS = new Set([
+      window.location.origin,
+      'https://douglastkaiser.github.io',
+      'https://douglastkaiser.com',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+    ]);
+    function logRejected(reason: string, event: MessageEvent, data?: unknown) {
+      console.warn('[reknown] extension_detection_rejected', {
+        reason,
+        origin: event.origin,
+        locationOrigin: window.location.origin,
+        sourceIsWindow: event.source === window,
+        dataType: typeof data,
+        type: data && typeof data === 'object' ? (data as { type?: unknown }).type : undefined,
+      });
+    }
     function onMessage(event: MessageEvent) {
-      if (event.source !== window) return;
-      if (event.origin !== window.location.origin) return;
       const data = event.data as {
         type?: string;
         version?: string;
         reason?: string;
         explicitReconnect?: boolean;
       } | null;
-      if (!data) return;
+      if (event.source !== window) {
+        logRejected('source_mismatch', event, data);
+        return;
+      }
+      if (!KNOWN_APP_ORIGINS.has(event.origin)) {
+        logRejected('origin_mismatch', event, data);
+        return;
+      }
+      if (!data || typeof data !== 'object') {
+        logRejected('data_missing_or_invalid', event, data);
+        return;
+      }
+      if (typeof data.type !== 'string' || !data.type) {
+        logRejected('type_missing', event, data);
+        return;
+      }
+      if (!data.type.startsWith('REKNOWN_EXTENSION_')) {
+        logRejected('type_unexpected', event, data);
+        return;
+      }
       if (data.type === 'REKNOWN_EXTENSION_DETECTED') {
+        if (typeof data.version !== 'string' || !data.version) {
+          logRejected('version_missing', event, data);
+          return;
+        }
         markDetected('proactive', data);
       }
       if (data.type === 'REKNOWN_EXTENSION_PING') {
