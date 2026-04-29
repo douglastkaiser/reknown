@@ -92,8 +92,12 @@ export function EnrichPhotosPanel({
   );
 
   useEffect(() => {
+    const now = new Date().toISOString();
     console.log(
       '[reknown] EnrichPhotosPanel mounted extensionAvailable=' + extensionAvailable,
+      'ts=' + now,
+      'origin=' + (typeof window !== 'undefined' ? window.location.origin : ''),
+      'path=' + (typeof window !== 'undefined' ? window.location.pathname : ''),
       'total=' + people.length,
       'withLinkedinUrl=' + withLinkedinUrl,
       'alreadyHavePhoto=' + alreadyHavePhoto,
