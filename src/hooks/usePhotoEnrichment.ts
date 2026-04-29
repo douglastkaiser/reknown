@@ -153,12 +153,34 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
   }, [onPhotoFetched]);
 
   useEffect(() => {
+    const KNOWN_APP_ORIGINS = new Set([
+      window.location.origin,
+      'https://douglastkaiser.github.io',
+      'https://douglastkaiser.com',
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+    ]);
+    const EXPECTED_TYPES = new Set([
+      'REKNOWN_ENRICH_PROGRESS',
+      'REKNOWN_ENRICH_COMPLETE',
+      'REKNOWN_ENRICH_REJECTED',
+      'REKNOWN_ENRICH_PROFILE',
+    ]);
+    function logRejected(reason: string, event: MessageEvent, data?: unknown) {
+      console.warn('[reknown] enrich_message_rejected', {
+        reason,
+        origin: event.origin,
+        locationOrigin: window.location.origin,
+        sourceIsWindow: event.source === window,
+        dataType: typeof data,
+        type: data && typeof data === 'object' ? (data as { type?: unknown }).type : undefined,
+      });
+    }
     function onMessage(event: MessageEvent) {
-      if (event.source !== window) return;
-      if (event.origin !== window.location.origin) return;
       const data = event.data as
         | {
             type?: string;
+            version?: string;
             requestId?: string;
             personId?: string;
             personName?: string;
@@ -189,8 +211,30 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             cooldown?: EnrichCooldown;
           }
         | null;
-      if (!data || !data.type) return;
-      if (!data.type.startsWith('REKNOWN_ENRICH_')) return;
+      if (event.source !== window) {
+        logRejected('source_mismatch', event, data);
+        return;
+      }
+      if (!KNOWN_APP_ORIGINS.has(event.origin)) {
+        logRejected('origin_mismatch', event, data);
+        return;
+      }
+      if (!data || typeof data !== 'object') {
+        logRejected('data_missing_or_invalid', event, data);
+        return;
+      }
+      if (typeof data.type !== 'string' || !data.type) {
+        logRejected('type_missing', event, data);
+        return;
+      }
+      if (!EXPECTED_TYPES.has(data.type)) {
+        logRejected('type_unexpected', event, data);
+        return;
+      }
+      if (typeof data.version !== 'undefined' && typeof data.version !== 'string') {
+        logRejected('version_invalid', event, data);
+        return;
+      }
       if (data.requestId && requestIdRef.current && data.requestId !== requestIdRef.current) {
         console.log(
           '[reknown] ignored',
