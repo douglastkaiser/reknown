@@ -7,6 +7,23 @@ import { useEffect, useState } from 'react';
  */
 export function useExtensionDetection(): { extensionAvailable: boolean } {
   const [extensionAvailable, setExtensionAvailable] = useState(false);
+  const [locationKey, setLocationKey] = useState(
+    () => `${window.location.origin}${window.location.pathname}${window.location.search}${window.location.hash}`,
+  );
+
+  useEffect(() => {
+    function onLocationChange() {
+      setLocationKey(
+        `${window.location.origin}${window.location.pathname}${window.location.search}${window.location.hash}`,
+      );
+    }
+    window.addEventListener('hashchange', onLocationChange);
+    window.addEventListener('popstate', onLocationChange);
+    return () => {
+      window.removeEventListener('hashchange', onLocationChange);
+      window.removeEventListener('popstate', onLocationChange);
+    };
+  }, []);
 
   useEffect(() => {
     const DETECTION_LOG_WINDOW_MS = 7000;
@@ -16,7 +33,14 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       window.localStorage.getItem('reknownExtensionVerbose') === '1' ||
       window.sessionStorage.getItem('reknownExtensionVerbose') === '1';
 
-    console.log('[reknown] useExtensionDetection mounted — sending ping', 'verbose=' + verbose);
+    const startedAt = Date.now();
+    const startedIso = new Date(startedAt).toISOString();
+    console.log(
+      '[reknown] useExtensionDetection mounted — listener registered before ping',
+      'startedAt=' + startedIso,
+      'locationKey=' + locationKey,
+      'verbose=' + verbose,
+    );
     let detected = false;
     let lastDetectionLogAt = 0;
     let lastPingAt = 0;
@@ -29,6 +53,27 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       return true;
     }
 
+    let pingAttempt = 0;
+
+    function markDetected(path: 'proactive' | 'pong', meta?: { version?: string; reason?: string; explicitReconnect?: boolean }) {
+      const now = Date.now();
+      const explicitReconnect = meta?.explicitReconnect === true;
+      if (!detected || shouldLogDetection(explicitReconnect)) {
+        console.log(
+          '[reknown] extension detected',
+          'path=' + path,
+          'attempt=' + pingAttempt,
+          'ts=' + new Date(now).toISOString(),
+          'elapsedMs=' + (now - startedAt),
+          'version=' + (meta?.version || '?'),
+          'reason=' + (meta?.reason || 'unknown'),
+          'explicitReconnect=' + explicitReconnect,
+        );
+      }
+      detected = true;
+      setExtensionAvailable(true);
+    }
+
     function onMessage(event: MessageEvent) {
       if (event.source !== window) return;
       if (event.origin !== window.location.origin) return;
@@ -38,26 +83,30 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
         reason?: string;
         explicitReconnect?: boolean;
       } | null;
-      if (data && data.type === 'REKNOWN_EXTENSION_DETECTED') {
-        const explicitReconnect = data.explicitReconnect === true;
-        if (!detected || shouldLogDetection(explicitReconnect)) {
-          console.log(
-            '[reknown] extension detected v' + (data.version || '?'),
-            'reason=' + (data.reason || 'unknown'),
-            'explicitReconnect=' + explicitReconnect,
-          );
-        }
-        detected = true;
-        setExtensionAvailable((previous) => previous || true);
+      if (!data) return;
+      if (data.type === 'REKNOWN_EXTENSION_DETECTED') {
+        markDetected('proactive', data);
+      }
+      if (data.type === 'REKNOWN_EXTENSION_PING') {
+        markDetected('pong', data);
       }
     }
 
     function ping(reason: 'initial' | 'focus', explicitReconnect = false) {
+      pingAttempt += 1;
+      const now = Date.now();
       if (!verbose && reason === 'focus') {
-        const now = Date.now();
         if (now - lastPingAt < DETECTION_LOG_WINDOW_MS) return;
         lastPingAt = now;
       }
+      console.log(
+        '[reknown] extension ping',
+        'attempt=' + pingAttempt,
+        'reason=' + reason,
+        'explicitReconnect=' + explicitReconnect,
+        'ts=' + new Date(now).toISOString(),
+        'elapsedMs=' + (now - startedAt),
+      );
       // Ask the content script to re-announce itself.
       window.postMessage(
         { type: 'REKNOWN_EXTENSION_PING', reason, explicitReconnect },
@@ -72,6 +121,15 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
     window.addEventListener('focus', pingOnFocus);
     // Initial ping in case the content script loaded before this hook mounted.
     ping('initial');
+    const retryInterval = window.setInterval(() => {
+      if (detected) return;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > 10000) {
+        window.clearInterval(retryInterval);
+        return;
+      }
+      ping('initial');
+    }, 1500);
     const warnTimer = window.setTimeout(() => {
       if (!detected) {
         console.warn(
@@ -85,8 +143,9 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       window.removeEventListener('message', onMessage);
       window.removeEventListener('focus', pingOnFocus);
       window.clearTimeout(warnTimer);
+      window.clearInterval(retryInterval);
     };
-  }, []);
+  }, [locationKey]);
 
   return { extensionAvailable };
 }
