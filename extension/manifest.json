@@ -37,9 +37,12 @@
         "http://127.0.0.1:5173/*",
         "http://127.0.0.1:5174/*",
         "http://127.0.0.1:8080/*",
-        "https://douglastkaiser.github.io/*",
-        "https://douglastkaiser.com/*",
-        "https://www.douglastkaiser.com/*"
+        "https://douglastkaiser.github.io/reknown/*",
+        "https://douglastkaiser.github.io/reknown/?*",
+        "https://douglastkaiser.com/reknown/*",
+        "https://douglastkaiser.com/reknown/?*",
+        "https://www.douglastkaiser.com/reknown/*",
+        "https://www.douglastkaiser.com/reknown/?*"
       ],
       "js": [
         "content-script.js"
