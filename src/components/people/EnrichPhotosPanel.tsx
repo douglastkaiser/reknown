@@ -55,7 +55,7 @@ export function EnrichPhotosPanel({
   people: Person[];
   onUpdate: (id: string, updates: Partial<Person>) => Promise<void> | void;
 }) {
-  const { extensionAvailable } = useExtensionDetection();
+  const { extensionAvailable, unavailableReason, lastPingAt, lastMessageAt, detectedVersion } = useExtensionDetection();
   const enrichment = usePhotoEnrichment({
     onPhotoFetched: async (id, photoDataUrl, photoUrl) => {
       const photoFocus = await detectPhotoFocus(photoDataUrl || photoUrl);
@@ -87,6 +87,8 @@ export function EnrichPhotosPanel({
       [Debug] extensionAvailable={String(extensionAvailable)} total={people.length}{' '}
       withLinkedinUrl={withLinkedinUrl} alreadyHavePhoto={alreadyHavePhoto}{' '}
       eligible={eligible.length} isRunning={String(enrichment.isRunning)}{' '}
+      unavailableReason={unavailableReason} lastPingAt={lastPingAt ? new Date(lastPingAt).toISOString() : '—'}{' '}
+      lastMessageAt={lastMessageAt ? new Date(lastMessageAt).toISOString() : '—'} version={detectedVersion ?? '—'}{' '}
       origin={typeof window !== 'undefined' ? window.location.origin : ''}
     </p>
   );
@@ -102,10 +104,14 @@ export function EnrichPhotosPanel({
       'withLinkedinUrl=' + withLinkedinUrl,
       'alreadyHavePhoto=' + alreadyHavePhoto,
       'eligible=' + eligible.length,
+      'unavailableReason=' + unavailableReason,
+      'lastPingAt=' + (lastPingAt ? new Date(lastPingAt).toISOString() : '—'),
+      'lastMessageAt=' + (lastMessageAt ? new Date(lastMessageAt).toISOString() : '—'),
+      'version=' + (detectedVersion ?? '—'),
     );
     // Intentionally only on mount and when extensionAvailable flips.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [extensionAvailable]);
+  }, [detectedVersion, extensionAvailable, lastMessageAt, lastPingAt, unavailableReason]);
 
   if (!extensionAvailable) {
     return (
@@ -179,7 +185,15 @@ export function EnrichPhotosPanel({
       'withLinkedinUrl=' + withLinkedinUrl,
       'alreadyHavePhoto=' + alreadyHavePhoto,
       'eligible=' + eligible.length,
+      'unavailableReason=' + unavailableReason,
+      'lastPingAt=' + (lastPingAt ? new Date(lastPingAt).toISOString() : '—'),
+      'lastMessageAt=' + (lastMessageAt ? new Date(lastMessageAt).toISOString() : '—'),
+      'version=' + (detectedVersion ?? '—'),
       'isRunning=' + isRunning,
+      'unavailableReason=' + unavailableReason,
+      'lastPingAt=' + (lastPingAt ? new Date(lastPingAt).toISOString() : '—'),
+      'lastMessageAt=' + (lastMessageAt ? new Date(lastMessageAt).toISOString() : '—'),
+      'version=' + (detectedVersion ?? '—'),
     );
     if (!extensionAvailable) {
       window.alert(
