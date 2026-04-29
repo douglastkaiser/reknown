@@ -1,12 +1,32 @@
 import { useEffect, useState } from 'react';
 
+export type ExtensionUnavailableReason =
+  | 'not_injected'
+  | 'ping_timeout'
+  | 'origin_rejected'
+  | 'listener_not_ready'
+  | 'manifest_mismatch'
+  | 'unknown';
+
+export type ExtensionDetectionState = {
+  extensionAvailable: boolean;
+  unavailableReason: ExtensionUnavailableReason;
+  lastPingAt: number | null;
+  lastMessageAt: number | null;
+  detectedVersion: string | null;
+};
+
 /**
  * Listens for the REKNOWN_EXTENSION_DETECTED message posted by the
  * reknown browser extension's content script on load (and on window focus).
  * Once detected, availability is sticky for the rest of the session.
  */
-export function useExtensionDetection(): { extensionAvailable: boolean } {
+export function useExtensionDetection(): ExtensionDetectionState {
   const [extensionAvailable, setExtensionAvailable] = useState(false);
+  const [unavailableReason, setUnavailableReason] = useState<ExtensionUnavailableReason>('unknown');
+  const [lastPingAt, setLastPingAt] = useState<number | null>(null);
+  const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
+  const [detectedVersion, setDetectedVersion] = useState<string | null>(null);
   const [locationKey, setLocationKey] = useState(
     () => `${window.location.origin}${window.location.pathname}${window.location.search}${window.location.hash}`,
   );
@@ -43,7 +63,9 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
     );
     let detected = false;
     let lastDetectionLogAt = 0;
-    let lastPingAt = 0;
+    let lastPingLoggedAt = 0;
+
+    setUnavailableReason('not_injected');
 
     function shouldLogDetection(explicitReconnect: boolean): boolean {
       if (verbose || explicitReconnect) return true;
@@ -55,7 +77,10 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
 
     let pingAttempt = 0;
 
-    function markDetected(path: 'proactive' | 'pong', meta?: { version?: string; reason?: string; explicitReconnect?: boolean }) {
+    function markDetected(
+      path: 'proactive' | 'pong',
+      meta?: { version?: string; reason?: string; explicitReconnect?: boolean },
+    ) {
       const now = Date.now();
       const explicitReconnect = meta?.explicitReconnect === true;
       if (!detected || shouldLogDetection(explicitReconnect)) {
@@ -72,6 +97,9 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       }
       detected = true;
       setExtensionAvailable(true);
+      setUnavailableReason('unknown');
+      if (meta?.version) setDetectedVersion(meta.version);
+      setLastMessageAt(now);
     }
 
     const KNOWN_APP_ORIGINS = new Set([
@@ -82,6 +110,8 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       'http://127.0.0.1:5173',
     ]);
     function logRejected(reason: string, event: MessageEvent, data?: unknown) {
+      setLastMessageAt(Date.now());
+      setUnavailableReason('origin_rejected');
       console.warn('[reknown] extension_detection_rejected', {
         reason,
         origin: event.origin,
@@ -98,6 +128,7 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
         reason?: string;
         explicitReconnect?: boolean;
       } | null;
+      setLastMessageAt(Date.now());
       if (event.source !== window) {
         logRejected('source_mismatch', event, data);
         return;
@@ -120,6 +151,7 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       }
       if (data.type === 'REKNOWN_EXTENSION_DETECTED') {
         if (typeof data.version !== 'string' || !data.version) {
+          setUnavailableReason('manifest_mismatch');
           logRejected('version_missing', event, data);
           return;
         }
@@ -133,9 +165,10 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
     function ping(reason: 'initial' | 'focus', explicitReconnect = false) {
       pingAttempt += 1;
       const now = Date.now();
+      setLastPingAt(now);
       if (!verbose && reason === 'focus') {
-        if (now - lastPingAt < DETECTION_LOG_WINDOW_MS) return;
-        lastPingAt = now;
+        if (now - lastPingLoggedAt < DETECTION_LOG_WINDOW_MS) return;
+        lastPingLoggedAt = now;
       }
       console.log(
         '[reknown] extension ping',
@@ -145,7 +178,6 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
         'ts=' + new Date(now).toISOString(),
         'elapsedMs=' + (now - startedAt),
       );
-      // Ask the content script to re-announce itself.
       window.postMessage(
         { type: 'REKNOWN_EXTENSION_PING', reason, explicitReconnect },
         window.location.origin,
@@ -157,19 +189,25 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
     }
     window.addEventListener('message', onMessage);
     window.addEventListener('focus', pingOnFocus);
-    // Initial ping in case the content script loaded before this hook mounted.
     ping('initial');
     const retryInterval = window.setInterval(() => {
       if (detected) return;
       const elapsed = Date.now() - startedAt;
       if (elapsed > 10000) {
+        setUnavailableReason('ping_timeout');
         window.clearInterval(retryInterval);
         return;
       }
       ping('initial');
     }, 1500);
+    const listenerReadyTimer = window.setTimeout(() => {
+      if (!detected && pingAttempt > 0) {
+        setUnavailableReason('listener_not_ready');
+      }
+    }, 1000);
     const warnTimer = window.setTimeout(() => {
       if (!detected) {
+        setUnavailableReason('ping_timeout');
         console.warn(
           '[reknown] WARNING: extension not detected after 3s — content script may not be injected on this origin:',
           window.location.origin,
@@ -181,9 +219,10 @@ export function useExtensionDetection(): { extensionAvailable: boolean } {
       window.removeEventListener('message', onMessage);
       window.removeEventListener('focus', pingOnFocus);
       window.clearTimeout(warnTimer);
+      window.clearTimeout(listenerReadyTimer);
       window.clearInterval(retryInterval);
     };
   }, [locationKey]);
 
-  return { extensionAvailable };
+  return { extensionAvailable, unavailableReason, lastPingAt, lastMessageAt, detectedVersion };
 }
