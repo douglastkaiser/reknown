@@ -58,7 +58,7 @@ export function FaceToNameCard({
           />
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 space-y-3 md:max-w-sm">
+        <form onSubmit={handleSubmit} className="flex-1 space-y-3 pb-24 md:max-w-sm md:pb-0">
           <input
             className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-center text-text placeholder:text-muted/50 focus:border-accent focus:outline-none md:text-lg"
             placeholder="Type their name..."
@@ -66,7 +66,7 @@ export function FaceToNameCard({
             onChange={(e) => setGuess(e.target.value)}
             autoFocus
           />
-          <div className="grid grid-cols-2 gap-2">
+          <div className="hidden grid-cols-2 gap-2 md:grid">
             <Button type="submit" disabled={!guess.trim()} className="w-full py-3">
               Submit
             </Button>
@@ -75,6 +75,17 @@ export function FaceToNameCard({
             </Button>
           </div>
         </form>
+      </div>
+
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-bg/95 p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur md:hidden">
+        <div className="mx-auto grid w-full max-w-2xl grid-cols-2 gap-2">
+          <Button type="button" onClick={handleSubmit} disabled={!guess.trim()} className="w-full py-3">
+            Submit
+          </Button>
+          <Button type="button" onClick={() => setResult(onDontKnow())} className="w-full py-3">
+            I don't know
+          </Button>
+        </div>
       </div>
     </section>
   );
