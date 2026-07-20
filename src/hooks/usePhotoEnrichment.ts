@@ -26,6 +26,8 @@ export type EnrichErrorCode =
   | 'reject.owner_mismatch'
   | 'owner_mismatch_stable';
 
+export type EnrichMode = 'fill' | 'recheck';
+
 export interface EnrichCooldown {
   cooldownUntil?: number | null;
   cooldownRemainingMs?: number;
@@ -141,6 +143,7 @@ function resolveIntegritySpecFromPayload(payload: {
 
 export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions) {
   const [isRunning, setIsRunning] = useState(false);
+  const [mode, setMode] = useState<EnrichMode>('fill');
   const [progress, setProgress] = useState<EnrichProgress>(INITIAL_PROGRESS);
   const [results, setResults] = useState<EnrichResult[]>([]);
   const [aborted, setAborted] = useState<EnrichAbortState | null>(null);
@@ -384,10 +387,15 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  const startEnrichment = useCallback((people: Person[]) => {
-    console.log('[reknown] startEnrichment called with', people.length, 'people');
+  const startEnrichment = useCallback((people: Person[], options?: { mode?: EnrichMode }) => {
+    const mode: EnrichMode = options?.mode ?? 'fill';
+    console.log('[reknown] startEnrichment called with', people.length, 'people', 'mode=' + mode);
+    // In `fill` mode we only fetch photos for people who don't have one yet.
+    // In `recheck` mode we re-fetch for everyone with a LinkedIn URL, so a
+    // wrong photo saved by an older extension version gets overwritten with a
+    // freshly-disambiguated one.
     const eligible = people
-      .filter((p) => p.linkedinUrl && !p.photoDataUrl && !p.photoUrl)
+      .filter((p) => p.linkedinUrl && (mode === 'recheck' || (!p.photoDataUrl && !p.photoUrl)))
       .map((p) => ({ id: p.id, name: p.name, linkedinUrl: p.linkedinUrl! }));
     console.log('[reknown] startEnrichment eligible after filter=' + eligible.length);
     if (eligible.length === 0) {
@@ -396,6 +404,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
     }
     const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     requestIdRef.current = requestId;
+    setMode(mode);
     setIsRunning(true);
     setCompleted(false);
     setAborted(null);
@@ -410,10 +419,11 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
     console.log(
       '[reknown] startEnrichment posting REKNOWN_ENRICH_REQUEST requestId=' + requestId,
       'count=' + eligible.length,
+      'mode=' + mode,
       'origin=' + window.location.origin,
     );
     window.postMessage(
-      { type: 'REKNOWN_ENRICH_REQUEST', requestId, people: eligible },
+      { type: 'REKNOWN_ENRICH_REQUEST', requestId, people: eligible, force: mode === 'recheck' },
       window.location.origin,
     );
     console.log('[reknown] startEnrichment postMessage returned');
@@ -442,6 +452,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
 
   return {
     isRunning,
+    mode,
     progress,
     results,
     completed,

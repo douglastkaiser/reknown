@@ -3,6 +3,7 @@ import type { Person } from '../../types';
 import { Button } from '../common/Button';
 import { googleImageSearchUrl, urlToData } from '../../lib/image';
 import { capitalizeName, parseNicknames } from '../../lib/text';
+import { parseCompanies, personCompanies } from '../../lib/companies';
 import type { PersonMetric } from '../../lib/storage';
 import { detectPhotoFocus } from '../../lib/face-focus';
 import { FacePhoto } from '../common/FacePhoto';
@@ -27,14 +28,18 @@ export function PersonCard({
   const [editNicknames, setEditNicknames] = useState((person.nicknames ?? []).join(', '));
   const [editHeadline, setEditHeadline] = useState(person.headline ?? '');
   const [editCompany, setEditCompany] = useState(person.company ?? '');
+  const [editCompanies, setEditCompanies] = useState((person.companies ?? []).join(', '));
   const [editPhotoUrl, setEditPhotoUrl] = useState(person.photoUrl ?? '');
   const [editLinkedinUrl, setEditLinkedinUrl] = useState(person.linkedinUrl ?? '');
+
+  const companyChips = personCompanies(person);
 
   function startEdit() {
     setEditName(person.name);
     setEditNicknames((person.nicknames ?? []).join(', '));
     setEditHeadline(person.headline ?? '');
     setEditCompany(person.company ?? '');
+    setEditCompanies((person.companies ?? []).join(', '));
     setEditPhotoUrl(person.photoUrl ?? '');
     setEditLinkedinUrl(person.linkedinUrl ?? '');
     setEditing(true);
@@ -51,11 +56,24 @@ export function PersonCard({
       nicknames: parseNicknames(editNicknames),
       headline: editHeadline,
       company: editCompany,
+      companies: parseCompanies(editCompanies),
       photoUrl: normalizedPhotoUrl,
       photoFocus,
       linkedinUrl: editLinkedinUrl.trim() || undefined,
     });
     setEditing(false);
+  }
+
+  // Clear the current photo so this person becomes eligible for re-enrichment.
+  // Used when a wrong image (e.g. your own profile photo) got saved by an
+  // earlier version of the extension.
+  async function clearPhoto() {
+    if (!onUpdate) return;
+    await onUpdate(person.id, {
+      photoDataUrl: undefined,
+      photoUrl: undefined,
+      photoFocus: undefined,
+    });
   }
 
   async function savePhotoFromUrl() {
@@ -99,12 +117,34 @@ export function PersonCard({
             <p className="text-xs text-muted/80">aka {person.nicknames.join(', ')}</p>
           ) : null}
           <p className="text-sm text-muted">{person.headline || 'No headline'}</p>
-          <p className="text-xs text-muted">{person.company || 'No company'}</p>
+          {companyChips.length > 1 ? (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {companyChips.map((c) => (
+                <span
+                  key={c.toLowerCase()}
+                  className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted"
+                >
+                  {c}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted">{person.company || 'No company'}</p>
+          )}
         </div>
         <div className="flex flex-col gap-1">
           {onUpdate ? (
             <Button onClick={() => (editing ? setEditing(false) : startEdit())}>
               {editing ? 'Cancel' : 'Edit'}
+            </Button>
+          ) : null}
+          {onUpdate && photo ? (
+            <Button
+              className="bg-yellow-400/20"
+              title="Not this person? Clears the photo so it can be re-fetched."
+              onClick={() => void clearPhoto()}
+            >
+              Wrong photo
             </Button>
           ) : null}
           <Button className="bg-red-400/20" onClick={() => onDelete(person.id)}>Delete</Button>
@@ -167,6 +207,16 @@ export function PersonCard({
             value={editCompany}
             onChange={(e) => setEditCompany(e.target.value)}
           />
+          <input
+            className="w-full rounded-lg bg-bg px-3 py-2 text-sm"
+            placeholder="Also worked at (comma separated)"
+            value={editCompanies}
+            onChange={(e) => setEditCompanies(e.target.value)}
+          />
+          <p className="text-[10px] text-muted">
+            Add every company you share with this person — they'll appear under each
+            company's sub-tab.
+          </p>
           <input
             type="url"
             className="w-full rounded-lg bg-bg px-3 py-2 text-sm"
