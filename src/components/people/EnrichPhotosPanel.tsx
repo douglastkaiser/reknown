@@ -81,6 +81,10 @@ export function EnrichPhotosPanel({
     () => people.filter((p) => !!p.photoDataUrl || !!p.photoUrl).length,
     [people],
   );
+  const recheckable = useMemo(
+    () => people.filter((p) => !!p.linkedinUrl && (!!p.photoDataUrl || !!p.photoUrl)),
+    [people],
+  );
 
   const debugStatus = (
     <p className="rounded bg-bg/50 px-2 py-1 text-[10px] font-mono text-muted">
@@ -236,6 +240,34 @@ export function EnrichPhotosPanel({
     enrichment.startEnrichment(eligible);
   }
 
+  function handleRecheckClick() {
+    if (!extensionAvailable) {
+      window.alert(
+        'Recheck blocked: reknown extension not detected on this page.\n\n' +
+          'Load the extension in Firefox (about:debugging) and hard-refresh this tab (Ctrl+Shift+R).',
+      );
+      return;
+    }
+    if (isRunning) {
+      window.alert('Recheck blocked: an enrichment batch is already running.');
+      return;
+    }
+    if (recheckable.length === 0) {
+      window.alert('No people with both a photo and a LinkedIn URL to recheck.');
+      return;
+    }
+    const ok = window.confirm(
+      `Re-fetch photos for ${recheckable.length} ${
+        recheckable.length === 1 ? 'person who' : 'people who'
+      } already have one?\n\n` +
+        'This re-downloads each photo from LinkedIn and overwrites the stored one, ' +
+        'fixing images that an older version of the extension pulled in incorrectly ' +
+        '(for example your own profile picture).',
+    );
+    if (!ok) return;
+    enrichment.startEnrichment(recheckable, { mode: 'recheck' });
+  }
+
   const subtitle =
     people.length === 0
       ? 'Import your LinkedIn CSV first — this extension fills in profile photos for people already on this list.'
@@ -281,6 +313,19 @@ export function EnrichPhotosPanel({
         </p>
       ) : null}
 
+      {recheckable.length > 0 && !isRunning ? (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg/50 px-3 py-2">
+          <p className="text-xs text-muted">
+            Double-check existing photos: re-fetch and overwrite the{' '}
+            {recheckable.length} already set from LinkedIn to fix any wrong images
+            (like your own profile picture).
+          </p>
+          <Button type="button" className="shrink-0" onClick={handleRecheckClick}>
+            Recheck ({recheckable.length})
+          </Button>
+        </div>
+      ) : null}
+
       {(isRunning || completed) && progress.total > 0 ? (
         <div className="space-y-2">
           <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
@@ -313,7 +358,9 @@ export function EnrichPhotosPanel({
             </p>
           ) : (
             <p>
-              Added photos for {progress.succeeded} of {progress.total} people.
+              {enrichment.mode === 'recheck'
+                ? `Re-checked ${progress.total} ${progress.total === 1 ? 'photo' : 'photos'}; updated ${progress.succeeded}.`
+                : `Added photos for ${progress.succeeded} of ${progress.total} people.`}
               {progress.failed > 0 ? ` ${progress.failed} failed.` : ''}
             </p>
           )}

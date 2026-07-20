@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { LoginPage } from './components/auth/LoginPage';
 import { PeopleForm } from './components/people/PeopleForm';
@@ -9,6 +9,7 @@ import { EspnRosterPanel } from './components/people/EspnRosterPanel';
 import { CivicRepresentativesPanel } from './components/people/CivicRepresentativesPanel';
 import { WebTeamPagePanel } from './components/people/WebTeamPagePanel';
 import { CategoryTabs } from './components/people/CategoryTabs';
+import { CompanyFilterTabs } from './components/people/CompanyFilterTabs';
 import { CategoryHeader } from './components/people/CategoryHeader';
 import { NewCategoryDialog } from './components/people/NewCategoryDialog';
 import { ReviewSessionFlow } from './components/review/ReviewSessionFlow';
@@ -24,7 +25,8 @@ import { useStats } from './hooks/useStats';
 import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
 import { fetchRoster, rosterToPersonRecords, SPORTS } from './lib/espn';
 import { getSettings, seedPeople } from './lib/storage';
-import type { Category, CsvPersonRow, Settings } from './types';
+import { collectCompanyOptions, personHasCompany } from './lib/companies';
+import type { Category, CsvPersonRow, Person, Settings } from './types';
 
 function useAppSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -114,7 +116,9 @@ function PeoplePage({
   categoriesState: ReturnType<typeof useCategories>;
 }) {
   const { categories, addCategory, editCategory, removeCategory } = categoriesState;
+  const navigate = useNavigate();
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeCompany, setActiveCompany] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Keep activeId in sync when categories list changes.
@@ -139,6 +143,30 @@ function PeoplePage({
         ? peopleState.people.filter((p) => p.categoryId === activeCategory.id)
         : [],
     [peopleState.people, activeCategory],
+  );
+
+  const companyOptions = useMemo(
+    () => collectCompanyOptions(peopleInCategory),
+    [peopleInCategory],
+  );
+
+  // Drop the active company filter whenever it no longer applies to the
+  // people currently in view (category switch, deletions, edits).
+  useEffect(() => {
+    if (
+      activeCompany !== null &&
+      !companyOptions.some((c) => c.name.toLowerCase() === activeCompany.toLowerCase())
+    ) {
+      setActiveCompany(null);
+    }
+  }, [companyOptions, activeCompany]);
+
+  const visiblePeople = useMemo(
+    () =>
+      activeCompany === null
+        ? peopleInCategory
+        : peopleInCategory.filter((p) => personHasCompany(p, activeCompany)),
+    [peopleInCategory, activeCompany],
   );
 
   const [espnImporting, setEspnImporting] = useState(false);
@@ -234,6 +262,16 @@ function PeoplePage({
             onToggleHiddenFromReview={handleToggleHiddenFromReview}
           />
 
+          <CompanyFilterTabs
+            options={companyOptions}
+            activeCompany={activeCompany}
+            totalCount={peopleInCategory.length}
+            onSelect={setActiveCompany}
+            onPractice={(company) =>
+              navigate(`/review?company=${encodeURIComponent(company)}`)
+            }
+          />
+
           <PeopleForm categoryId={activeCategory.id} onSave={peopleState.addPerson} />
 
           {activeCategory.enrichMethod === 'linkedin' ? (
@@ -268,8 +306,14 @@ function PeoplePage({
             <div className="card text-sm text-muted">Importing roster from ESPN…</div>
           ) : null}
 
+          {activeCompany !== null && visiblePeople.length === 0 ? (
+            <div className="card text-sm text-muted">
+              No people at {activeCompany} in this section.
+            </div>
+          ) : null}
+
           <PeopleList
-            people={peopleInCategory}
+            people={visiblePeople}
             onDelete={(id) => void peopleState.removePerson(id)}
             onUpdate={(id, updates) => peopleState.editPerson(id, updates)}
           />
@@ -281,6 +325,43 @@ function PeoplePage({
         onCancel={() => setDialogOpen(false)}
         onCreate={handleCreate}
       />
+    </div>
+  );
+}
+
+function ReviewRoute({
+  people,
+  settings,
+}: {
+  people: Person[];
+  settings: Settings | null;
+}) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const company = searchParams.get('company');
+
+  const scopedPeople = useMemo(
+    () => (company ? people.filter((p) => personHasCompany(p, company)) : people),
+    [people, company],
+  );
+
+  return (
+    <div className="space-y-3">
+      {company ? (
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+          <span className="text-text">
+            Practicing <strong>{company}</strong> · {scopedPeople.length}{' '}
+            {scopedPeople.length === 1 ? 'person' : 'people'}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSearchParams({})}
+            className="whitespace-nowrap rounded-full border border-border px-3 py-1 text-xs text-muted hover:bg-white/5 hover:text-text"
+          >
+            Practice everyone
+          </button>
+        </div>
+      ) : null}
+      <ReviewSessionFlow key={company ?? 'all'} people={scopedPeople} settings={settings} />
     </div>
   );
 }
@@ -304,7 +385,7 @@ function AuthenticatedApp() {
   return (
     <AppShell>
       <Routes>
-        <Route path="/review" element={<ReviewSessionFlow people={reviewPeople} settings={settings} />} />
+        <Route path="/review" element={<ReviewRoute people={reviewPeople} settings={settings} />} />
         <Route
           path="/people"
           element={<PeoplePage peopleState={peopleState} categoriesState={categoriesState} />}
