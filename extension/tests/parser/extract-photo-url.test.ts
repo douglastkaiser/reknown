@@ -83,7 +83,7 @@ function loadParserHarness(overlayHtml?: string) {
   context.globalThis = context;
 
   vm.runInNewContext(
-    `${source}\n;globalThis.__parserTestApi = { extractPhotoUrl, getNoPhotoRetrySignal, normalizeExplicitRejectCode };`,
+    `${source}\n;globalThis.__parserTestApi = { extractPhotoUrl, getNoPhotoRetrySignal, normalizeExplicitRejectCode, compactNoPhotoFoundBundle };`,
     context,
     { filename: 'extension/background.js' },
   );
@@ -98,6 +98,15 @@ function loadParserHarness(overlayHtml?: string) {
       dominantRejectReason: string | null,
     ) => { rejectionCode: string | null; htmlFingerprint: unknown; dominantOwnerIdentifier: string | null };
     normalizeExplicitRejectCode: (reason: unknown) => string | null;
+    compactNoPhotoFoundBundle: (
+      html: string,
+      slug: string,
+      extraction: unknown,
+    ) => {
+      pageShape: { shape: string; title: string; signals: Record<string, unknown> };
+      tokenCounts: { publicIdentifier: number };
+      targetPublicIdentifierHits: number;
+    };
   });
 }
 
@@ -198,5 +207,39 @@ describe('getNoPhotoRetrySignal reject-code normalization', () => {
     expect(api.normalizeExplicitRejectCode('reject.custom')).toBe('reject.custom');
     expect(api.normalizeExplicitRejectCode('no_displayphoto_artifacts')).toBeNull();
     expect(api.normalizeExplicitRejectCode(null)).toBeNull();
+  });
+});
+
+describe('compactNoPhotoFoundBundle page-shape classification', () => {
+  it('always attaches a pageShape classification to the bundle', () => {
+    const api = loadParserHarness();
+    const bundle = api.compactNoPhotoFoundBundle('<html><body>anything</body></html>', 'target-slug', null);
+    expect(bundle.pageShape).toBeTruthy();
+    expect(typeof bundle.pageShape.shape).toBe('string');
+    expect(bundle.pageShape.signals).toBeTruthy();
+  });
+
+  it('classifies a logged-out / authwall page (no profile payload)', () => {
+    const api = loadParserHarness();
+    const html =
+      '<html><head><title>Sign Up | LinkedIn</title></head><body>' +
+      '<div class="authwall">Join now to see target-slug on LinkedIn. New to LinkedIn? Sign in to see more.</div>' +
+      '</body></html>';
+    const bundle = api.compactNoPhotoFoundBundle(html, 'target-slug', null);
+    expect(bundle.pageShape.shape).toBe('authwall_or_logged_out');
+    expect(bundle.tokenCounts.publicIdentifier).toBe(0);
+  });
+
+  it('classifies a page that carries profile payload but not the requested slug', () => {
+    const api = loadParserHarness();
+    const html =
+      '<html><head><title>Someone Else | LinkedIn</title></head><body>' +
+      '<code>{"publicIdentifier":"someone-else","firstName":"Someone"}</code>' +
+      '<div class="global-nav__me">Me</div>' +
+      '</body></html>';
+    const bundle = api.compactNoPhotoFoundBundle(html, 'target-slug', null);
+    expect(bundle.tokenCounts.publicIdentifier).toBeGreaterThan(0);
+    expect(bundle.targetPublicIdentifierHits).toBe(0);
+    expect(bundle.pageShape.shape).toBe('target_slug_absent');
   });
 });
