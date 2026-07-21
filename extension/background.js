@@ -414,6 +414,10 @@ function emitBatchSummaryLog(args) {
     data.failuresByDominantRejectReason && typeof data.failuresByDominantRejectReason === 'object'
       ? data.failuresByDominantRejectReason
       : {};
+  const failuresByPageShape =
+    data.failuresByPageShape && typeof data.failuresByPageShape === 'object'
+      ? data.failuresByPageShape
+      : {};
   const fetchDurationsMs = Array.isArray(data.fetchDurationsMs) ? data.fetchDurationsMs : [];
   const payload = {
     requestId: data.requestId || null,
@@ -425,6 +429,7 @@ function emitBatchSummaryLog(args) {
     failuresByCode: failuresByCode,
     internalErrorFailures: Number(failuresByCode.internal_error) || 0,
     failuresByDominantRejectReason: failuresByDominantRejectReason,
+    failuresByPageShape: failuresByPageShape,
     fetchTimingMs: {
       p50: getPercentile(fetchDurationsMs, 50),
       p95: getPercentile(fetchDurationsMs, 95),
@@ -446,12 +451,13 @@ function normalizeRejectOwnerMismatch(reason) {
 
 function getProgressErrorMeta(error) {
   if (typeof error === 'string') {
-    return { errorCode: error, dominantRejectReason: null };
+    return { errorCode: error, dominantRejectReason: null, pageShape: null };
   }
   if (!error || typeof error !== 'object') {
-    return { errorCode: 'unknown_error', dominantRejectReason: null };
+    return { errorCode: 'unknown_error', dominantRejectReason: null, pageShape: null };
   }
   const baseCode = typeof error.code === 'string' ? error.code : 'unknown_error';
+  const pageShape = typeof error.pageShape === 'string' ? error.pageShape : null;
   const rawDominantRejectReason =
     typeof error.dominantRejectReason === 'string'
       ? error.dominantRejectReason
@@ -461,11 +467,13 @@ function getProgressErrorMeta(error) {
     return {
       errorCode: 'reject.owner_mismatch',
       dominantRejectReason: normalizedDominantRejectReason,
+      pageShape: pageShape,
     };
   }
   return {
     errorCode: baseCode,
     dominantRejectReason: normalizedDominantRejectReason,
+    pageShape: pageShape,
   };
 }
 
@@ -3202,13 +3210,6 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     }
     return bestReason;
   };
-  const normalizeExplicitRejectCode = function (reason) {
-    if (!reason || typeof reason !== 'string') return null;
-    if (reason.indexOf('reject.') === 0) return reason;
-    if (/owner_mismatch|owner_proximity_reject/i.test(reason)) return 'reject.owner_mismatch';
-    if (/truncated_root_only/i.test(reason)) return 'reject.truncated_root_only';
-    return null;
-  };
   const getCandidateRejectCodes = function (candidate) {
     const codes = [];
     if (!candidate.isMediaLicdn) codes.push('reject.host_not_licdn');
@@ -4074,6 +4075,55 @@ async function computeDataUrlSha256Prefix(dataUrl, prefixLen) {
   }
 }
 
+// Classify what the fetched HTML actually is when no photo could be extracted.
+// The extraction strategies only tell us "no candidate met the rules"; this tells
+// us *why* the page had no usable data — most importantly, whether LinkedIn served
+// a logged-out / authwall page (no profile payload at all), a different person's
+// page, or a logged-in page whose markup drifted away from our anchors. Emitted
+// inside the no_photo_found compact bundle so batch failures are self-diagnosing.
+function classifyNoPhotoPageShape(decoded, targetPublicIdentifierHits, tokenCounts) {
+  const titleMatch = decoded.match(/<title[^>]*>([^<]{0,200})<\/title>/i);
+  const title = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : '';
+  const totalPublicIdTokens =
+    tokenCounts && typeof tokenCounts.publicIdentifier === 'number' ? tokenCounts.publicIdentifier : 0;
+  const authwallHits = countOccurrences(decoded, 'authwall');
+  const joinNowHits = countRegex(decoded, /join now|join linkedin|new to linkedin|sign in to see/gi);
+  const sessionRedirectHits = countRegex(decoded, /sessionRedirect|session_redirect|uas\/login|checkpoint\/lg|trk=guest/gi);
+  const guestHits = countRegex(decoded, /guest-homepage|guest_homepage|voyager\/api\/graphql\?queryId=voyagerGuest|"guestExperience"/gi);
+  const loggedInHits = countRegex(decoded, /global-nav__me|feed-identity-module|voyager\/api\/identity|profile-photo-edit__preview|me-menu/gi);
+  const titleLooksAuth = /sign\s?in|join linkedin|sign\s?up|log\s?in|\bregister\b/i.test(title);
+  let shape;
+  if (totalPublicIdTokens === 0 && (authwallHits > 0 || joinNowHits > 0 || guestHits > 0 || titleLooksAuth)) {
+    // No profile JSON payload at all + explicit guest/auth markers -> not authenticated.
+    shape = 'authwall_or_logged_out';
+  } else if (totalPublicIdTokens === 0) {
+    // No profile payload and no clear auth markers -> unexpected/empty page shell.
+    shape = 'no_profile_payload';
+  } else if (targetPublicIdentifierHits === 0) {
+    // Page carries profile JSON, but never the requested slug -> wrong/redirected profile.
+    shape = 'target_slug_absent';
+  } else if (loggedInHits === 0) {
+    // Requested profile is present but the logged-in anchors are gone -> markup drift.
+    shape = 'possible_markup_drift';
+  } else {
+    shape = 'payload_present_no_accepted_candidate';
+  }
+  return {
+    shape: shape,
+    title: title.substring(0, 140),
+    signals: {
+      totalPublicIdentifierTokens: totalPublicIdTokens,
+      targetPublicIdentifierHits: targetPublicIdentifierHits,
+      authwallHits: authwallHits,
+      joinNowHits: joinNowHits,
+      sessionRedirectHits: sessionRedirectHits,
+      guestHits: guestHits,
+      loggedInHits: loggedInHits,
+      titleLooksAuth: titleLooksAuth,
+    },
+  };
+}
+
 function compactNoPhotoFoundBundle(html, slug, extraction) {
   const decoded = normalizeLinkedInHtml(html || '', 'no-photo-bundle');
   const targetSlug = typeof slug === 'string' ? slug.toLowerCase() : '';
@@ -4133,6 +4183,7 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
     topOwners.push({ publicIdentifier: slug, hitsNearCandidates: 0, note: 'target_slug_no_nearby_candidate_owner' });
   }
   return {
+    pageShape: classifyNoPhotoPageShape(decoded, targetPublicIdentifierHits, tokenCounts),
     htmlFingerprint: {
       length: decoded.length,
       hash32: stableHash32(decoded),
@@ -4156,6 +4207,17 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
     candidateDiagnostics: candidateDiagnostics,
     decisionSummary: decisionSummary,
   };
+}
+
+// Normalize a strategy/dominant reject reason into a canonical `reject.*` code.
+// Declared at module scope (not inside extractPhotoUrl) so both extractPhotoUrl
+// and getNoPhotoRetrySignal can call it without a ReferenceError.
+function normalizeExplicitRejectCode(reason) {
+  if (!reason || typeof reason !== 'string') return null;
+  if (reason.indexOf('reject.') === 0) return reason;
+  if (/owner_mismatch|owner_proximity_reject/i.test(reason)) return 'reject.owner_mismatch';
+  if (/truncated_root_only/i.test(reason)) return 'reject.truncated_root_only';
+  return null;
 }
 
 function getNoPhotoRetrySignal(html, slug, extraction, rejectReason, dominantRejectReason) {
@@ -4351,6 +4413,9 @@ async function enrichOne(person, context) {
     }),
   );
   if (DEBUG_VERBOSE) {
+    // Recompute the raw /in/<segment> match locally: getLinkedInSlugFromProfileUrl
+    // returns only the decoded slug, and its internal slugMatch is out of scope here.
+    const slugMatch = String(url || '').match(/\/in\/([^\s/?#]+)/i);
     console.log(
       '[reknown-ext] enrichOne slug extracted',
       'slug=' + slug,
@@ -4886,6 +4951,22 @@ async function enrichOne(person, context) {
   }
   if (!photoUrl) {
     const compactBundle = compactNoPhotoFoundBundle(html, slug, extraction);
+    const pageShapeCode =
+      compactBundle && compactBundle.pageShape && typeof compactBundle.pageShape.shape === 'string'
+        ? compactBundle.pageShape.shape
+        : null;
+    // Concise, scannable one-liner (the full bundle below is verbose JSON). When a
+    // whole batch fails, these lines make the cause obvious at a glance — e.g. a
+    // wall of `pageShape=authwall_or_logged_out` means the session isn't logged in.
+    console.warn(
+      '[reknown-ext] no_photo_found summary',
+      'slug=' + slug,
+      'pageShape=' + (pageShapeCode || 'unknown'),
+      'title="' + (compactBundle && compactBundle.pageShape ? compactBundle.pageShape.title : '') + '"',
+      'publicIdTokens=' + (compactBundle && compactBundle.tokenCounts ? compactBundle.tokenCounts.publicIdentifier : '?'),
+      'targetSlugHits=' + (compactBundle ? compactBundle.targetPublicIdentifierHits : '?'),
+      'rejectReason=' + (extractionRejectReason || extractionDominantRejectReason || 'no_photo_found'),
+    );
     console.warn(
       '[reknown-ext] no_photo_found compact bundle',
       JSON.stringify(Object.assign({}, compactBundle, {
@@ -4920,6 +5001,7 @@ async function enrichOne(person, context) {
             : 'no_photo_found',
         reason: extractionRejectReason || extractionDominantRejectReason || null,
         dominantRejectReason: extractionDominantRejectReason || extractionRejectReason || null,
+        pageShape: pageShapeCode,
       },
     });
   }
@@ -5135,6 +5217,7 @@ async function runBatch(requestId, people, tabId) {
   let failed = 0;
   const failuresByCode = { internal_error: 0 };
   const failuresByDominantRejectReason = {};
+  const failuresByPageShape = {};
   const fetchDurationsMs = [];
   let firstFailureTimestamp = null;
   try {
@@ -5277,6 +5360,10 @@ async function runBatch(requestId, people, tabId) {
           failuresByDominantRejectReason[progressErrorMeta.dominantRejectReason] =
             (failuresByDominantRejectReason[progressErrorMeta.dominantRejectReason] || 0) + 1;
         }
+        if (progressErrorMeta.pageShape) {
+          failuresByPageShape[progressErrorMeta.pageShape] =
+            (failuresByPageShape[progressErrorMeta.pageShape] || 0) + 1;
+        }
         if (!firstFailureTimestamp) firstFailureTimestamp = new Date().toISOString();
         const resultProgressMeta = Object.freeze(
           Object.assign({}, immutableProgressMeta, result && result.progressMeta && typeof result.progressMeta === 'object' ? result.progressMeta : {}),
@@ -5323,6 +5410,7 @@ async function runBatch(requestId, people, tabId) {
               lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
               failuresByCode: failuresByCode,
               failuresByDominantRejectReason: failuresByDominantRejectReason,
+              failuresByPageShape: failuresByPageShape,
             },
           });
           debugEvent('batch.summary', {
@@ -5339,6 +5427,7 @@ async function runBatch(requestId, people, tabId) {
             failed: failed,
             failuresByCode: failuresByCode,
             failuresByDominantRejectReason: failuresByDominantRejectReason,
+            failuresByPageShape: failuresByPageShape,
             fetchDurationsMs: fetchDurationsMs,
             firstFailureTimestamp: firstFailureTimestamp,
           });
@@ -5355,6 +5444,7 @@ async function runBatch(requestId, people, tabId) {
           failed: failed,
           failuresByCode: failuresByCode,
           failuresByDominantRejectReason: failuresByDominantRejectReason,
+          failuresByPageShape: failuresByPageShape,
           fetchDurationsMs: fetchDurationsMs,
           firstFailureTimestamp: firstFailureTimestamp,
         });
@@ -5404,6 +5494,7 @@ async function runBatch(requestId, people, tabId) {
         lowConfidenceFallbackAcceptedCount: batchStats.lowConfidenceFallbackAcceptedCount,
         failuresByCode: failuresByCode,
         failuresByDominantRejectReason: failuresByDominantRejectReason,
+        failuresByPageShape: failuresByPageShape,
       },
     });
     debugEvent('batch.summary', {
@@ -5420,6 +5511,7 @@ async function runBatch(requestId, people, tabId) {
       failed: failed,
       failuresByCode: failuresByCode,
       failuresByDominantRejectReason: failuresByDominantRejectReason,
+      failuresByPageShape: failuresByPageShape,
       fetchDurationsMs: fetchDurationsMs,
       firstFailureTimestamp: firstFailureTimestamp,
     });
