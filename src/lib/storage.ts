@@ -19,7 +19,7 @@ import {
 } from './sync-bus';
 
 const DB_NAME = 'reknown-db';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 function canPush(): boolean {
   if (!isSyncActive() || isApplyingRemote()) return false;
@@ -162,6 +162,14 @@ const dbPromise = openDB<ReknownDB>(DB_NAME, DB_VERSION, {
       const tombstones = db.createObjectStore('tombstones', { keyPath: 'id' });
       tombstones.createIndex('by-deletedAt', 'deletedAt');
     }
+
+    if (oldVersion < 7) {
+      // Settings were previously stored under a single global `app` key,
+      // shared by every account on the device. They are now keyed per scope
+      // (`app:<scope>`), so drop the legacy row to avoid one user's
+      // preferences bleeding into another's until cloud sync repopulates.
+      void tx.objectStore('settings').clear();
+    }
   },
 });
 
@@ -289,13 +297,24 @@ export async function deletePerson(personId: string): Promise<void> {
   if (canPush()) getSyncHandlers()?.pushTombstone(tombstone);
 }
 
+/**
+ * Erase every locally-stored record belonging to `scope`. Used on sign-out
+ * so a signed-in account's names, faces, lists and review history do not
+ * linger in IndexedDB for the next person to use a shared device. Cloud data
+ * is untouched — reconciliation repopulates on the next sign-in.
+ */
 export async function clearScope(scope: string): Promise<void> {
   const db = await dbPromise;
-  const tx = db.transaction(
-    ['people', 'categories', 'stats', 'reviewEvents', 'sessionSummaries'],
-    'readwrite',
-  );
-  for (const storeName of ['people', 'categories', 'stats', 'reviewEvents', 'sessionSummaries'] as const) {
+  const scopedStores = [
+    'people',
+    'categories',
+    'stats',
+    'reviewEvents',
+    'sessionSummaries',
+    'tombstones',
+  ] as const;
+  const tx = db.transaction([...scopedStores, 'settings'], 'readwrite');
+  for (const storeName of scopedStores) {
     const store = tx.objectStore(storeName);
     const rows = await store.getAll();
     for (const row of rows as Array<{ scope?: string; id: string | number }>) {
@@ -304,17 +323,24 @@ export async function clearScope(scope: string): Promise<void> {
       }
     }
   }
+  // Settings carry the scope in their key rather than a `scope` field.
+  await tx.objectStore('settings').delete(`app:${scope}`);
   await tx.done;
+}
+
+function settingsKey(): string {
+  return `app:${requireScope()}`;
 }
 
 export async function getSettings(): Promise<Settings> {
   const db = await dbPromise;
-  const existing = await db.get('settings', 'app');
+  const key = settingsKey();
+  const existing = await db.get('settings', key);
   if (existing) {
     const merged: Settings = {
       ...DEFAULT_SETTINGS,
       ...existing,
-      id: 'app',
+      id: key,
       cardTypeWeights: {
         ...DEFAULT_SETTINGS.cardTypeWeights,
         ...existing.cardTypeWeights,
@@ -329,13 +355,14 @@ export async function getSettings(): Promise<Settings> {
     }
     return merged;
   }
-  await db.put('settings', DEFAULT_SETTINGS);
-  return DEFAULT_SETTINGS;
+  const initial: Settings = { ...DEFAULT_SETTINGS, id: key };
+  await db.put('settings', initial);
+  return initial;
 }
 
 export async function updateSettings(updates: Partial<Omit<Settings, 'id' | 'updatedAt'>>): Promise<Settings> {
   const current = await getSettings();
-  const next: Settings = { ...current, ...updates, id: 'app', updatedAt: Date.now() };
+  const next: Settings = { ...current, ...updates, id: settingsKey(), updatedAt: Date.now() };
   const db = await dbPromise;
   await db.put('settings', next);
   if (canPush()) getSyncHandlers()?.pushSettings(next);
@@ -374,23 +401,25 @@ export async function updateStats(updates: Partial<Omit<AppStats, 'id' | 'update
 }
 
 export async function exportJson(): Promise<string> {
+  // Only ever export the active account's data. Reading whole stores here
+  // would otherwise bundle every account that has synced on this device.
+  const scope = requireScope();
   const db = await dbPromise;
-  const [people, categories, stats, settings, reviewEvents, sessionSummaries] = await Promise.all([
+  const [allPeople, allCategories, allReviewEvents, allSessionSummaries] = await Promise.all([
     db.getAll('people'),
     db.getAll('categories'),
-    db.get('stats', 'app'),
-    db.get('settings', 'app'),
     db.getAllFromIndex('reviewEvents', 'by-timestamp'),
     db.getAllFromIndex('sessionSummaries', 'by-timestamp'),
   ]);
+  const [settings, stats] = await Promise.all([getSettings(), getStats()]);
   return JSON.stringify({
     exportedAt: new Date().toISOString(),
-    people,
-    categories,
+    people: allPeople.filter((p) => p.scope === scope),
+    categories: allCategories.filter((c) => c.scope === scope),
     stats,
     settings,
-    reviewEvents,
-    sessionSummaries,
+    reviewEvents: allReviewEvents.filter((e) => e.scope === scope),
+    sessionSummaries: allSessionSummaries.filter((s) => s.scope === scope),
   }, null, 2);
 }
 
@@ -581,10 +610,12 @@ export async function applyRemoteCategory(category: Category): Promise<void> {
   });
 }
 
-export async function applyRemoteSettings(settings: Settings): Promise<void> {
+export async function applyRemoteSettings(settings: Settings, scope: string): Promise<void> {
   await withApplyingRemote(async () => {
     const db = await dbPromise;
-    await db.put('settings', settings);
+    // Remote settings live at `settings/app`; land them under this scope's
+    // local key so they don't overwrite another account's row.
+    await db.put('settings', { ...settings, id: `app:${scope}` });
   });
 }
 
@@ -642,9 +673,9 @@ export async function applyRemoteTombstone(tombstone: EntityTombstone): Promise<
  * Direct, scope-explicit getters used by reconciliation to read single
  * records without touching `activeScope`.
  */
-export async function getSettingsDirect(): Promise<Settings | undefined> {
+export async function getSettingsDirect(scope: string): Promise<Settings | undefined> {
   const db = await dbPromise;
-  return db.get('settings', 'app');
+  return db.get('settings', `app:${scope}`);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import {
+  clearIndexedDbPersistence,
   connectFirestoreEmulator,
   enableIndexedDbPersistence,
   getFirestore,
@@ -26,12 +27,35 @@ export const googleProvider = new GoogleAuthProvider();
 // browsing in some browsers). We ignore the failure — the app already has
 // its own IDB layer; cloud sync will simply require a network connection.
 if (typeof window !== 'undefined') {
-  enableIndexedDbPersistence(db, { forceOwnership: false }).catch((err) => {
-    if (err?.code === 'failed-precondition' || err?.code === 'unimplemented') {
-      // Expected in multi-tab or unsupported environments.
-      return;
+  // A prior sign-out may have requested that Firestore's own offline cache be
+  // purged so one account's synced data doesn't linger on a shared device.
+  // `clearIndexedDbPersistence` must run before the client is used or offline
+  // persistence is enabled, so we do it here at boot before anything touches
+  // `db`.
+  let pendingCacheClear = false;
+  try {
+    if (window.localStorage.getItem('reknown:clear-fs-cache') === '1') {
+      window.localStorage.removeItem('reknown:clear-fs-cache');
+      pendingCacheClear = true;
     }
-    console.warn('[firebase] offline persistence unavailable', err);
+  } catch {
+    // Storage unavailable (private mode etc.) — nothing to clear.
+  }
+
+  const ready = pendingCacheClear
+    ? clearIndexedDbPersistence(db).catch((err) => {
+        console.warn('[firebase] failed to clear Firestore cache on sign-out', err);
+      })
+    : Promise.resolve();
+
+  void ready.finally(() => {
+    enableIndexedDbPersistence(db, { forceOwnership: false }).catch((err) => {
+      if (err?.code === 'failed-precondition' || err?.code === 'unimplemented') {
+        // Expected in multi-tab or unsupported environments.
+        return;
+      }
+      console.warn('[firebase] offline persistence unavailable', err);
+    });
   });
 }
 

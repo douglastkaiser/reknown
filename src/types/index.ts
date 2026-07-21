@@ -181,7 +181,10 @@ export interface ReviewMetrics {
 }
 
 export interface Settings {
-  id: 'app';
+  // Local IndexedDB key is per-user (`app:<scope>`) so accounts sharing a
+  // device don't collide; the Firestore doc is always `settings/app` under
+  // the owner's subtree.
+  id: string;
   deckSize: number;
   newCardsWhenQueueSmall: number;
   queueCap: number;

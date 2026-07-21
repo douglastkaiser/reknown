@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut, type User } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
 import {
+  clearScope,
   createCategory,
   listPeople,
   migrateGuestScope,
@@ -89,10 +90,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signOut() {
+    const uid = user?.uid ?? auth.currentUser?.uid ?? null;
     stopSync();
     await firebaseSignOut(auth);
-    setUser(null);
     setIsGuest(false);
+
+    if (uid) {
+      // Wipe this account's local data so names, faces, lists and review
+      // history don't survive for the next person on a shared device. Cloud
+      // data is untouched; the next sign-in reconciles it back. Guest data is
+      // left alone — it has no cloud backup to restore from.
+      try {
+        await clearScope(`u:${uid}`);
+      } catch (err) {
+        console.warn('[auth] local data wipe on sign-out failed', err);
+      }
+      setUser(null);
+      setActiveScope(null);
+      // Ask the next boot to purge Firestore's own offline cache, then hard
+      // reload to drop all in-memory state.
+      try {
+        window.localStorage.setItem('reknown:clear-fs-cache', '1');
+      } catch {
+        // Non-fatal: private-mode or storage-disabled browsers just skip the
+        // Firestore-cache purge; our own IndexedDB wipe above still ran.
+      }
+      window.location.reload();
+      return;
+    }
+
+    setUser(null);
     setActiveScope(null);
   }
 
