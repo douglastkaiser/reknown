@@ -83,12 +83,22 @@ function loadParserHarness(overlayHtml?: string) {
   context.globalThis = context;
 
   vm.runInNewContext(
-    `${source}\n;globalThis.__parserTestApi = { extractPhotoUrl };`,
+    `${source}\n;globalThis.__parserTestApi = { extractPhotoUrl, getNoPhotoRetrySignal, normalizeExplicitRejectCode };`,
     context,
     { filename: 'extension/background.js' },
   );
 
-  return (context.__parserTestApi as { extractPhotoUrl: (html: string, slug: string) => Promise<ExtractionResult> });
+  return (context.__parserTestApi as {
+    extractPhotoUrl: (html: string, slug: string) => Promise<ExtractionResult>;
+    getNoPhotoRetrySignal: (
+      html: string,
+      slug: string,
+      extraction: unknown,
+      rejectReason: string | null,
+      dominantRejectReason: string | null,
+    ) => { rejectionCode: string | null; htmlFingerprint: unknown; dominantOwnerIdentifier: string | null };
+    normalizeExplicitRejectCode: (reason: unknown) => string | null;
+  });
 }
 
 describe('extractPhotoUrl parser fixtures', () => {
@@ -142,5 +152,51 @@ describe('extractPhotoUrl parser fixtures', () => {
 
     expect(result.url).toBeNull();
     expect(result.rejectReason).toBe('authwall_like_response');
+  });
+});
+
+describe('getNoPhotoRetrySignal reject-code normalization', () => {
+  // Regression: normalizeExplicitRejectCode used to be a local const inside
+  // extractPhotoUrl, so getNoPhotoRetrySignal (a module-scope function) threw
+  // "normalizeExplicitRejectCode is not defined", failing every enrichment with
+  // internal_error/reference_error.
+  it('does not throw a ReferenceError when building the no-photo retry signal', () => {
+    const api = loadParserHarness();
+    expect(() =>
+      api.getNoPhotoRetrySignal('<html></html>', 'myerscm', { url: null }, 'owner_mismatch', 'no_displayphoto_artifacts'),
+    ).not.toThrow();
+  });
+
+  it('normalizes owner_mismatch reject reasons to a canonical reject.* code', () => {
+    const api = loadParserHarness();
+    const signal = api.getNoPhotoRetrySignal(
+      '<html></html>',
+      'myerscm',
+      { url: null },
+      'owner_mismatch',
+      'no_displayphoto_artifacts',
+    );
+    expect(signal.rejectionCode).toBe('reject.owner_mismatch');
+  });
+
+  it('falls back to the raw reason when no canonical code matches', () => {
+    const api = loadParserHarness();
+    const signal = api.getNoPhotoRetrySignal(
+      '<html></html>',
+      'myerscm',
+      { url: null },
+      null,
+      'no_displayphoto_artifacts',
+    );
+    expect(signal.rejectionCode).toBe('no_displayphoto_artifacts');
+  });
+
+  it('exposes normalizeExplicitRejectCode at module scope', () => {
+    const api = loadParserHarness();
+    expect(api.normalizeExplicitRejectCode('owner_mismatch')).toBe('reject.owner_mismatch');
+    expect(api.normalizeExplicitRejectCode('truncated_root_only')).toBe('reject.truncated_root_only');
+    expect(api.normalizeExplicitRejectCode('reject.custom')).toBe('reject.custom');
+    expect(api.normalizeExplicitRejectCode('no_displayphoto_artifacts')).toBeNull();
+    expect(api.normalizeExplicitRejectCode(null)).toBeNull();
   });
 });

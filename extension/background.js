@@ -3202,13 +3202,6 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
     }
     return bestReason;
   };
-  const normalizeExplicitRejectCode = function (reason) {
-    if (!reason || typeof reason !== 'string') return null;
-    if (reason.indexOf('reject.') === 0) return reason;
-    if (/owner_mismatch|owner_proximity_reject/i.test(reason)) return 'reject.owner_mismatch';
-    if (/truncated_root_only/i.test(reason)) return 'reject.truncated_root_only';
-    return null;
-  };
   const getCandidateRejectCodes = function (candidate) {
     const codes = [];
     if (!candidate.isMediaLicdn) codes.push('reject.host_not_licdn');
@@ -4156,6 +4149,17 @@ function compactNoPhotoFoundBundle(html, slug, extraction) {
     candidateDiagnostics: candidateDiagnostics,
     decisionSummary: decisionSummary,
   };
+}
+
+// Normalize a strategy/dominant reject reason into a canonical `reject.*` code.
+// Declared at module scope (not inside extractPhotoUrl) so both extractPhotoUrl
+// and getNoPhotoRetrySignal can call it without a ReferenceError.
+function normalizeExplicitRejectCode(reason) {
+  if (!reason || typeof reason !== 'string') return null;
+  if (reason.indexOf('reject.') === 0) return reason;
+  if (/owner_mismatch|owner_proximity_reject/i.test(reason)) return 'reject.owner_mismatch';
+  if (/truncated_root_only/i.test(reason)) return 'reject.truncated_root_only';
+  return null;
 }
 
 function getNoPhotoRetrySignal(html, slug, extraction, rejectReason, dominantRejectReason) {
