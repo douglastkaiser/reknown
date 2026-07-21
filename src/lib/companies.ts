@@ -106,6 +106,45 @@ export function partitionCompanyOptions(options: CompanyOption[]): {
 }
 
 /**
+ * Fold companies scraped from a LinkedIn profile into a person's existing
+ * `companies` list. Purely additive: existing entries keep their order and are
+ * never removed (manual edits win), scraped names are appended only when new.
+ * The primary `company` is skipped because `personCompanies()` already implies
+ * it — `companies` holds the extra history. Returns `null` when nothing new
+ * would be added, so callers can skip a redundant write.
+ */
+export function mergeScrapedCompanies(
+  existing: string[] | undefined,
+  scraped: string[],
+  primary?: string,
+): string[] | null {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: unknown) => {
+    const value = cleanCompany(raw);
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(value);
+  };
+  if (Array.isArray(existing)) {
+    for (const entry of existing) add(entry);
+  }
+  const startLen = result.length;
+  const primaryKey = cleanCompany(primary)?.toLowerCase() ?? null;
+  for (const entry of scraped) {
+    const value = cleanCompany(entry);
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (key === primaryKey || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result.length > startLen ? result : null;
+}
+
+/**
  * Parse a comma-separated list of companies from a text input into a clean,
  * deduped array suitable for `Person.companies`.
  */

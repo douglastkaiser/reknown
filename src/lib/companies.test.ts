@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Person } from '../types';
 import {
   collectCompanyOptions,
+  mergeScrapedCompanies,
   parseCompanies,
   partitionCompanyOptions,
   personCompanies,
@@ -100,6 +101,40 @@ describe('partitionCompanyOptions', () => {
       shared: [],
       rare: options,
     });
+  });
+});
+
+describe('mergeScrapedCompanies', () => {
+  it('appends new scraped companies after existing ones', () => {
+    expect(mergeScrapedCompanies(['Globex'], ['Initech', 'Umbrella'], 'Acme')).toEqual([
+      'Globex',
+      'Initech',
+      'Umbrella',
+    ]);
+  });
+
+  it('skips the primary company and case-insensitive duplicates', () => {
+    expect(mergeScrapedCompanies(['Globex'], ['acme', 'GLOBEX', 'Initech'], 'Acme')).toEqual([
+      'Globex',
+      'Initech',
+    ]);
+  });
+
+  it('returns null when nothing new would be added', () => {
+    expect(mergeScrapedCompanies(['Globex'], ['Acme', 'globex'], 'Acme')).toBeNull();
+    expect(mergeScrapedCompanies(undefined, ['Acme'], 'Acme')).toBeNull();
+    expect(mergeScrapedCompanies([], [], undefined)).toBeNull();
+  });
+
+  it('keeps the current company when there is no primary yet', () => {
+    expect(mergeScrapedCompanies(undefined, ['Acme', 'Globex'], '')).toEqual(['Acme', 'Globex']);
+  });
+
+  it('ignores blank and whitespace-only scraped entries', () => {
+    expect(mergeScrapedCompanies(['Globex'], ['', '  ', ' Initech '], 'Acme')).toEqual([
+      'Globex',
+      'Initech',
+    ]);
   });
 });
 

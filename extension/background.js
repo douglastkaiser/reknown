@@ -2593,6 +2593,109 @@ function decodeHtml(s) {
   });
 }
 
+// Cap how much we pull from a single profile so a malformed page can't flood
+// the person record with junk. Names longer than this aren't real employers.
+const MAX_COMPANY_NAME_LEN = 120;
+const MAX_COMPANIES_PER_PROFILE = 25;
+// Position entities in LinkedIn's embedded Voyager JSON each carry a
+// "companyName" string — this is the full work history (current + past).
+const COMPANY_NAME_RE = /"companyName"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+
+function decodeCompanyName(raw) {
+  if (typeof raw !== 'string') return '';
+  const unescaped = raw
+    .replace(/\\u([0-9a-fA-F]{4})/g, function (match, hex) {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCharCode(code) : match;
+    })
+    .replace(/\\"/g, '"')
+    .replace(/\\\//g, '/')
+    .replace(/\\\\/g, '\\');
+  return decodeHtml(unescaped).replace(/\s+/g, ' ').trim();
+}
+
+function toArrayOfObjects(value) {
+  if (Array.isArray(value)) return value;
+  return value ? [value] : [];
+}
+
+// schema.org Organization name, skipping schools so education in `alumniOf`
+// doesn't get mistaken for an employer.
+function jsonLdOrgName(org) {
+  if (!org || typeof org !== 'object') return null;
+  if (org['@type'] === 'EducationalOrganization') return null;
+  return typeof org.name === 'string' ? org.name : null;
+}
+
+// Current employer(s) from any Person node's `worksFor` in schema.org JSON-LD.
+// This is the leaner public-HTML source; the Voyager `companyName` scan above
+// is richer, so this only backfills.
+function collectJsonLdCompanyNames(html) {
+  const names = [];
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = re.exec(html)) !== null) {
+    let data;
+    try {
+      data = JSON.parse(match[1].trim());
+    } catch (err) {
+      continue;
+    }
+    const items = Array.isArray(data) ? data : [data];
+    for (const item of items) {
+      const graph = item && item['@graph'] ? item['@graph'] : [item];
+      for (const node of graph) {
+        if (!node || typeof node !== 'object') continue;
+        const type = node['@type'];
+        const isPerson = type === 'Person' || (Array.isArray(type) && type.indexOf('Person') !== -1);
+        if (!isPerson) continue;
+        for (const org of toArrayOfObjects(node.worksFor)) {
+          const name = jsonLdOrgName(org);
+          if (name) names.push(name);
+        }
+      }
+    }
+  }
+  return names;
+}
+
+// Every company in a fetched profile's work history, so the web app can list a
+// person under each employer they've had — not just their current one. Merges
+// the embedded Voyager `companyName` fields with schema.org `worksFor`, deduped
+// case-insensitively (first-seen casing wins). Always returns an array and
+// never throws: company capture is best-effort and must not break the photo
+// enrichment it rides along with.
+function extractProfileCompanies(html) {
+  try {
+    if (typeof html !== 'string' || !html) return [];
+    const out = [];
+    const seen = new Set();
+    const push = (raw) => {
+      const name = decodeCompanyName(raw);
+      if (!name || name.length > MAX_COMPANY_NAME_LEN) return;
+      const key = name.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(name);
+    };
+    let m;
+    COMPANY_NAME_RE.lastIndex = 0;
+    while ((m = COMPANY_NAME_RE.exec(html)) !== null && out.length < MAX_COMPANIES_PER_PROFILE) {
+      push(m[1]);
+    }
+    if (out.length < MAX_COMPANIES_PER_PROFILE) {
+      for (const name of collectJsonLdCompanyNames(html)) {
+        if (out.length >= MAX_COMPANIES_PER_PROFILE) break;
+        push(name);
+      }
+    }
+    return out;
+  } catch (err) {
+    console.warn('[reknown-ext] extractProfileCompanies threw', String(err));
+    return [];
+  }
+}
+
 function isDefaultAvatar(url) {
   if (!url) return true;
   const lower = url.toLowerCase();
@@ -4128,6 +4231,7 @@ async function enrichOne(person, context) {
     photoDataUrl: null,
     photoBlob: null,
     photoHash: null,
+    companies: [],
   };
   const assertionMeta =
     context && context.assertionMeta && typeof context.assertionMeta === 'object'
@@ -4165,6 +4269,16 @@ async function enrichOne(person, context) {
       resultObj.fetchProfileDurationMs = fetchProfileDurationMs;
     }
     if (!resultObj || typeof resultObj !== 'object') return resultObj;
+    // Ride the scraped work history along with whatever the photo pipeline
+    // produced (success or a photo-specific failure) so the web app can list
+    // the person under every employer, not just their current one.
+    if (
+      Array.isArray(enrichLocalState.companies) &&
+      enrichLocalState.companies.length &&
+      !Object.prototype.hasOwnProperty.call(resultObj, 'companies')
+    ) {
+      resultObj.companies = enrichLocalState.companies.slice();
+    }
     const selectedUrlFingerprint =
       enrichLocalState.selectedCandidate &&
       typeof enrichLocalState.selectedCandidate === 'object' &&
@@ -4383,6 +4497,18 @@ async function enrichOne(person, context) {
         reason: 'profile_html_empty',
       },
     });
+  }
+  // Scrape the work history now that we have the profile HTML. This is
+  // additive and defensive — extractProfileCompanies never throws — so it can
+  // sit ahead of photo extraction without risking the existing pipeline.
+  enrichLocalState.companies = extractProfileCompanies(html);
+  if (DEBUG_VERBOSE) {
+    console.log(
+      '[reknown-ext] enrichOne companies scraped',
+      'personId=' + (eventBase.personId || ''),
+      'count=' + enrichLocalState.companies.length,
+      'companies=' + JSON.stringify(enrichLocalState.companies.slice(0, 10)),
+    );
   }
   const parserSignals = {
     hasJsonLdPerson: html.includes('"@type":"Person"') || html.includes('"@type": "Person"'),
@@ -5128,6 +5254,7 @@ async function runBatch(requestId, people, tabId) {
           status: 'success',
           photoDataUrl: result.photoDataUrl,
           photoUrl: result.photoUrl,
+          companies: Array.isArray(result.companies) ? result.companies : undefined,
           index: i,
           total: people.length,
           intendedPersonId: person && person.id ? String(person.id) : null,
@@ -5162,6 +5289,7 @@ async function runBatch(requestId, people, tabId) {
           status: 'error',
           error: result.error,
           errorCode: progressErrorCode,
+          companies: Array.isArray(result.companies) ? result.companies : undefined,
           index: i,
           total: people.length,
           intendedPersonId: person && person.id ? String(person.id) : null,
