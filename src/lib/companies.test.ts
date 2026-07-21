@@ -3,6 +3,7 @@ import type { Person } from '../types';
 import {
   collectCompanyOptions,
   parseCompanies,
+  partitionCompanyOptions,
   personCompanies,
   personHasCompany,
 } from './companies';
@@ -67,6 +68,38 @@ describe('collectCompanyOptions', () => {
       makePerson({ id: '4', company: 'Alpha' }),
     ];
     expect(collectCompanyOptions(people).map((o) => o.name)).toEqual(['Big', 'Alpha', 'Zeta']);
+  });
+});
+
+describe('partitionCompanyOptions', () => {
+  it('splits shared (2+) companies from single-person ones, preserving order', () => {
+    const options = [
+      { name: 'Acme', count: 4 },
+      { name: 'Globex', count: 2 },
+      { name: 'Initech', count: 1 },
+      { name: 'Umbrella', count: 1 },
+    ];
+    expect(partitionCompanyOptions(options)).toEqual({
+      shared: [
+        { name: 'Acme', count: 4 },
+        { name: 'Globex', count: 2 },
+      ],
+      rare: [
+        { name: 'Initech', count: 1 },
+        { name: 'Umbrella', count: 1 },
+      ],
+    });
+  });
+
+  it('puts everything in the tail when no company is shared', () => {
+    const options = [
+      { name: 'Acme', count: 1 },
+      { name: 'Globex', count: 1 },
+    ];
+    expect(partitionCompanyOptions(options)).toEqual({
+      shared: [],
+      rare: options,
+    });
   });
 });
 

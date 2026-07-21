@@ -81,6 +81,31 @@ export function collectCompanyOptions(people: Person[]): CompanyOption[] {
 }
 
 /**
+ * How many people must share a company before its sub-tab is shown up front.
+ * Anything below this is a single-person company — a long tail that buries the
+ * shared employers the filter is really for, so those are collapsed by default.
+ */
+export const SHARED_COMPANY_MIN_COUNT = 2;
+
+/**
+ * Split already-sorted company options (see `collectCompanyOptions`) into the
+ * companies worth leading with — shared by `SHARED_COMPANY_MIN_COUNT`+ people —
+ * and the tail of single-person companies. Lets the sub-tabs show the shared
+ * ones by default and tuck the rest behind a "show all" toggle.
+ */
+export function partitionCompanyOptions(options: CompanyOption[]): {
+  shared: CompanyOption[];
+  rare: CompanyOption[];
+} {
+  const shared: CompanyOption[] = [];
+  const rare: CompanyOption[] = [];
+  for (const opt of options) {
+    (opt.count >= SHARED_COMPANY_MIN_COUNT ? shared : rare).push(opt);
+  }
+  return { shared, rare };
+}
+
+/**
  * Parse a comma-separated list of companies from a text input into a clean,
  * deduped array suitable for `Person.companies`.
  */
