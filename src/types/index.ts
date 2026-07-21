@@ -43,8 +43,9 @@ export interface Person {
    * Additional companies from this person's background beyond the primary
    * `company`. Powers the company sub-tabs: a person is listed under every
    * company in their combined set, so shared histories can overlap across
-   * tabs. Populated by editing a person; `company` is always included
-   * implicitly via `personCompanies()`.
+   * tabs. Populated by editing a person or scraped from their LinkedIn work
+   * history during photo enrichment; `company` is always included implicitly
+   * via `personCompanies()`.
    */
   companies?: string[];
   notes?: string;

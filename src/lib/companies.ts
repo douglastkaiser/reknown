@@ -81,6 +81,70 @@ export function collectCompanyOptions(people: Person[]): CompanyOption[] {
 }
 
 /**
+ * How many people must share a company before its sub-tab is shown up front.
+ * Anything below this is a single-person company — a long tail that buries the
+ * shared employers the filter is really for, so those are collapsed by default.
+ */
+export const SHARED_COMPANY_MIN_COUNT = 2;
+
+/**
+ * Split already-sorted company options (see `collectCompanyOptions`) into the
+ * companies worth leading with — shared by `SHARED_COMPANY_MIN_COUNT`+ people —
+ * and the tail of single-person companies. Lets the sub-tabs show the shared
+ * ones by default and tuck the rest behind a "show all" toggle.
+ */
+export function partitionCompanyOptions(options: CompanyOption[]): {
+  shared: CompanyOption[];
+  rare: CompanyOption[];
+} {
+  const shared: CompanyOption[] = [];
+  const rare: CompanyOption[] = [];
+  for (const opt of options) {
+    (opt.count >= SHARED_COMPANY_MIN_COUNT ? shared : rare).push(opt);
+  }
+  return { shared, rare };
+}
+
+/**
+ * Fold companies scraped from a LinkedIn profile into a person's existing
+ * `companies` list. Purely additive: existing entries keep their order and are
+ * never removed (manual edits win), scraped names are appended only when new.
+ * The primary `company` is skipped because `personCompanies()` already implies
+ * it — `companies` holds the extra history. Returns `null` when nothing new
+ * would be added, so callers can skip a redundant write.
+ */
+export function mergeScrapedCompanies(
+  existing: string[] | undefined,
+  scraped: string[],
+  primary?: string,
+): string[] | null {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: unknown) => {
+    const value = cleanCompany(raw);
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(value);
+  };
+  if (Array.isArray(existing)) {
+    for (const entry of existing) add(entry);
+  }
+  const startLen = result.length;
+  const primaryKey = cleanCompany(primary)?.toLowerCase() ?? null;
+  for (const entry of scraped) {
+    const value = cleanCompany(entry);
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (key === primaryKey || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result.length > startLen ? result : null;
+}
+
+/**
  * Parse a comma-separated list of companies from a text input into a clean,
  * deduped array suitable for `Person.companies`.
  */

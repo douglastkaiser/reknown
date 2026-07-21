@@ -63,6 +63,18 @@ export interface UsePhotoEnrichmentOptions {
     personId: string,
     photoDataUrl: string,
     photoUrl?: string,
+    companies?: string[],
+  ) => Promise<void> | void;
+  /**
+   * Called when the extension scraped a work history but no photo was applied
+   * (e.g. the profile only had a default avatar). Lets company capture happen
+   * even when photo enrichment fails. On a photo success the companies ride
+   * along `onPhotoFetched` instead, so this fires at most once per person and
+   * never races the photo update.
+   */
+  onCompaniesFetched?: (
+    personId: string,
+    companies: string[],
   ) => Promise<void> | void;
 }
 
@@ -73,6 +85,13 @@ const INITIAL_PROGRESS: EnrichProgress = {
   failed: 0,
   currentPerson: null,
 };
+
+// Normalize the scraped-companies field off an incoming enrich message into a
+// clean list of non-empty strings.
+function readCompanies(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((c): c is string => typeof c === 'string' && c.trim().length > 0);
+}
 
 function normalizeEnrichError(
   error: unknown,
@@ -141,7 +160,10 @@ function resolveIntegritySpecFromPayload(payload: {
   return { spec: PHOTO_INTEGRITY_SPEC_V1, isLegacyPayload: false };
 }
 
-export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions) {
+export function usePhotoEnrichment({
+  onPhotoFetched,
+  onCompaniesFetched,
+}: UsePhotoEnrichmentOptions) {
   const [isRunning, setIsRunning] = useState(false);
   const [mode, setMode] = useState<EnrichMode>('fill');
   const [progress, setProgress] = useState<EnrichProgress>(INITIAL_PROGRESS);
@@ -151,9 +173,13 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
 
   const requestIdRef = useRef<string | null>(null);
   const onPhotoFetchedRef = useRef(onPhotoFetched);
+  const onCompaniesFetchedRef = useRef(onCompaniesFetched);
   useEffect(() => {
     onPhotoFetchedRef.current = onPhotoFetched;
   }, [onPhotoFetched]);
+  useEffect(() => {
+    onCompaniesFetchedRef.current = onCompaniesFetched;
+  }, [onCompaniesFetched]);
 
   useEffect(() => {
     const KNOWN_APP_ORIGINS = new Set([
@@ -190,6 +216,7 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
             status?: string;
             photoDataUrl?: string;
             photoUrl?: string;
+            companies?: string[];
             intendedPersonId?: string | null;
             slug?: string | null;
             photoSha256Prefix?: string | null;
@@ -315,9 +342,10 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
               });
             }
           });
-          void Promise.resolve(onPhotoFetchedRef.current(id, dataUrl, rawUrl)).catch((err) =>
-            console.error('[reknown] onPhotoFetched failed', err),
-          );
+          const scrapedCompanies = readCompanies(data.companies);
+          void Promise.resolve(
+            onPhotoFetchedRef.current(id, dataUrl, rawUrl, scrapedCompanies),
+          ).catch((err) => console.error('[reknown] onPhotoFetched failed', err));
           setResults((r) => [...r, { id, name: data.personName ?? '', status: 'success' }]);
           setProgress((p) => ({
             ...p,
@@ -327,6 +355,14 @@ export function usePhotoEnrichment({ onPhotoFetched }: UsePhotoEnrichmentOptions
           return;
         }
         if (data.status === 'error' && data.personId) {
+          // The photo failed, but if we still scraped a work history, capture
+          // it. onPhotoFetched won't fire here, so this is the only path.
+          const scrapedCompanies = readCompanies(data.companies);
+          if (scrapedCompanies.length && onCompaniesFetchedRef.current) {
+            void Promise.resolve(
+              onCompaniesFetchedRef.current(data.personId, scrapedCompanies),
+            ).catch((err) => console.error('[reknown] onCompaniesFetched failed', err));
+          }
           const normalized =
             typeof data.errorCode === 'string' && data.errorCode.trim()
               ? {

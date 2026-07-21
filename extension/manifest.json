@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "reknown \u2014 LinkedIn Photo Enricher",
-  "version": "1.0.4",
-  "description": "Fetches LinkedIn profile photos for your reknown face-recall deck",
+  "version": "1.1.0",
+  "description": "Fetches LinkedIn profile photos and work history for your reknown face-recall deck",
   "browser_specific_settings": {
     "gecko": {
       "id": "reknown-linkedin-enricher@douglastkaiser.github.io",

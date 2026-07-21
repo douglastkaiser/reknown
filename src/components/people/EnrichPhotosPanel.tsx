@@ -7,6 +7,7 @@ import {
   type EnrichErrorCode,
 } from '../../hooks/usePhotoEnrichment';
 import { detectPhotoFocus } from '../../lib/face-focus';
+import { mergeScrapedCompanies } from '../../lib/companies';
 
 const ERROR_LABELS: Record<EnrichErrorCode, string> = {
   invalid_url: 'Invalid LinkedIn URL',
@@ -56,16 +57,32 @@ export function EnrichPhotosPanel({
   onUpdate: (id: string, updates: Partial<Person>) => Promise<void> | void;
 }) {
   const { extensionAvailable, unavailableReason, lastPingAt, lastMessageAt, detectedVersion } = useExtensionDetection();
+  // Fold a freshly-scraped work history into a person's `companies` without
+  // disturbing manual edits or the primary company. Returns null when nothing
+  // changes so we can skip a redundant write.
+  const companyUpdate = (id: string, companies: string[]): Partial<Person> | null => {
+    const person = people.find((p) => p.id === id);
+    const merged = mergeScrapedCompanies(person?.companies, companies, person?.company);
+    return merged ? { companies: merged } : null;
+  };
   const enrichment = usePhotoEnrichment({
-    onPhotoFetched: async (id, photoDataUrl, photoUrl) => {
+    onPhotoFetched: async (id, photoDataUrl, photoUrl, companies) => {
       const photoFocus = await detectPhotoFocus(photoDataUrl || photoUrl);
       // Persist the raw licdn URL alongside the base64 data URL when the
       // extension provides it, so the "Edit person" form has something to
-      // show in the Photo URL field instead of appearing blank.
-      const updates: Partial<Person> = photoUrl
+      // show in the Photo URL field instead of appearing blank. Fold in the
+      // scraped companies in the SAME update so we never race two writes for
+      // one person (updatePerson is read-modify-write).
+      const photoUpdates: Partial<Person> = photoUrl
         ? { photoDataUrl, photoUrl, photoFocus }
         : { photoDataUrl, photoFocus };
-      return onUpdate(id, updates);
+      const companyUpdates = companies?.length ? companyUpdate(id, companies) : null;
+      return onUpdate(id, companyUpdates ? { ...photoUpdates, ...companyUpdates } : photoUpdates);
+    },
+    // Photo failed but a work history came back — persist it on its own.
+    onCompaniesFetched: async (id, companies) => {
+      const updates = companyUpdate(id, companies);
+      if (updates) return onUpdate(id, updates);
     },
   });
 

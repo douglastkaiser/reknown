@@ -1,6 +1,8 @@
 # reknown — LinkedIn Photo Enricher (browser extension)
 
-This is a small browser add-on that works with the [reknown](https://douglastkaiser.github.io/reknown/) flashcard app. When you click a button inside reknown, it quietly opens each of your LinkedIn connections' profile pages **using your own already-logged-in LinkedIn session**, grabs their profile photo, and saves it to your reknown deck. Nothing leaves your computer — no servers, no accounts, no API keys.
+This is a small browser add-on that works with the [reknown](https://douglastkaiser.github.io/reknown/) flashcard app. When you click a button inside reknown, it quietly opens each of your LinkedIn connections' profile pages **using your own already-logged-in LinkedIn session**, grabs their profile photo **and their work history**, and saves both to your reknown deck. Nothing leaves your computer — no servers, no accounts, no API keys.
+
+The work history powers reknown's **Filter by company** sub-tabs: because it captures every company a person has listed (not just their current job), the same person shows up under each employer you shared with them.
 
 **You only need to install this once.** After that, every time you import new LinkedIn connections into reknown, you can click one button to pull in their photos.
 
@@ -107,6 +109,8 @@ This is the easiest Firefox path **if you used Option A**:
 5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the tab open and let it run. By default, the extension uses a conservative **`safe`** throttle profile (about 4–7 seconds per person, 60-second pause every 12 people) to reduce LinkedIn rate-limit risk.
 6. When it's done, you'll see a summary like `Added photos for 43 of 47 people. 4 failed.` You can click **Retry failed** to try the stragglers again.
 
+> **Work history comes along for free.** While fetching each photo, the extension also reads the person's listed companies and merges them into that person's record (it never overwrites anything you typed by hand). Those companies feed the **Filter by company** sub-tabs on the People tab. Because the history is captured whenever a profile is read — even for people whose photo couldn't be fetched — running **Recheck** is a good way to backfill companies for connections you imported before installing this version.
+
 ---
 
 ## Things that can go wrong (and how to fix them)
@@ -123,7 +127,7 @@ This is the easiest Firefox path **if you used Option A**:
 ## Safety and privacy
 
 - The extension **only ever fetches** URLs that match `https://www.linkedin.com/in/*`. Nothing else.
-- All data (profile HTML, photos, everything) stays on your computer. It's handed to reknown via `window.postMessage` and reknown stores it in IndexedDB — same place as every other photo you'd add manually.
+- All data (profile HTML, photos, work history, everything) stays on your computer. The profile HTML is parsed locally to pull out the photo and the list of companies; only those extracted values are handed to reknown via `window.postMessage`, and reknown stores them in IndexedDB — same place as every other photo you'd add manually.
 - Throttling is built in with profiles. Default is `safe`: ~4–7 seconds between requests, 60-second pause every 12 requests, instant abort on any rate-limit or login-wall response.
 - The content script only runs on reknown's origins. It won't interfere with LinkedIn browsing, even though it has permission to fetch from LinkedIn in the background.
 
