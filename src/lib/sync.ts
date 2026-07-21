@@ -106,7 +106,9 @@ function pushCategory(category: Category): void {
 
 function pushSettings(settings: Settings): void {
   if (!currentUid) return;
-  const payload = stripUndefined({ ...settings });
+  // The cloud doc is always `settings/app`; the local `id` is a per-scope
+  // key that has no meaning in Firestore, so normalize it back to 'app'.
+  const payload = stripUndefined({ ...settings, id: 'app' });
   void setDoc(userDoc(currentUid, 'settings', 'app'), payload).catch((err) => {
     console.warn('[sync] pushSettings failed', err);
   });
@@ -262,19 +264,20 @@ async function reconcileCategories(uid: string, scope: string): Promise<void> {
 }
 
 async function reconcileSettings(uid: string): Promise<void> {
+  const scope = `u:${uid}`;
   const snap = await getDocs(userCol(uid, 'settings'));
   let remote: Settings | undefined;
   snap.forEach((d) => {
     if (d.id === 'app') remote = d.data() as Settings;
   });
-  const local = await getSettingsDirect();
+  const local = await getSettingsDirect(scope);
   if (remote && !local) {
-    await applyRemoteSettings(remote);
+    await applyRemoteSettings(remote, scope);
   } else if (local && !remote) {
     pushSettings(local);
   } else if (local && remote) {
     if ((local.updatedAt ?? 0) > (remote.updatedAt ?? 0)) pushSettings(local);
-    else if ((remote.updatedAt ?? 0) > (local.updatedAt ?? 0)) await applyRemoteSettings(remote);
+    else if ((remote.updatedAt ?? 0) > (local.updatedAt ?? 0)) await applyRemoteSettings(remote, scope);
   }
 }
 
@@ -381,11 +384,12 @@ function subscribeCategories(uid: string, scope: string): Unsubscribe {
 }
 
 function subscribeSettings(uid: string): Unsubscribe {
+  const scope = `u:${uid}`;
   return onSnapshot(userDoc(uid, 'settings', 'app'), (doc) => {
     if (doc.metadata.hasPendingWrites) return;
     if (!doc.exists()) return;
     void (async () => {
-      await applyRemoteSettings(doc.data() as Settings);
+      await applyRemoteSettings(doc.data() as Settings, scope);
       emitRemoteChanged('settings');
     })();
   });
