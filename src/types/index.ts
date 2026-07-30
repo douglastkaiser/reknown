@@ -39,6 +39,10 @@ export interface Person {
   };
   headline?: string;
   company?: string;
+  /** Current location as entered or supplied by the source. */
+  location?: string;
+  /** Normalized/best-guess current region (for example, `SoCal`). */
+  region?: string;
   /**
    * Additional companies from this person's background beyond the primary
    * `company`. Powers the company sub-tabs: a person is listed under every
@@ -200,6 +204,8 @@ export interface CsvPersonRow {
   name: string;
   headline?: string;
   company?: string;
+  location?: string;
+  region?: string;
   linkedinUrl?: string;
   photoUrl?: string;
   notes?: string;

@@ -62,6 +62,8 @@ export function WebTeamImportPanel({
           await updatePerson(existing.id, {
             headline: record.headline,
             company: record.company,
+            location: record.location,
+            region: record.region,
             photoUrl: record.photoUrl,
             linkedinUrl: record.link,
           });
@@ -72,6 +74,8 @@ export function WebTeamImportPanel({
             name: record.name,
             headline: record.headline,
             company: record.company,
+            location: record.location,
+            region: record.region,
             photoUrl: record.photoUrl,
             linkedinUrl: record.link,
           });

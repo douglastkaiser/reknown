@@ -7,6 +7,7 @@ import { parseCompanies, personCompanies } from '../../lib/companies';
 import type { PersonMetric } from '../../lib/storage';
 import { detectPhotoFocus } from '../../lib/face-focus';
 import { FacePhoto } from '../common/FacePhoto';
+import { inferPersonRegion } from '../../lib/regions';
 
 export function PersonCard({
   person,
@@ -29,6 +30,8 @@ export function PersonCard({
   const [editHeadline, setEditHeadline] = useState(person.headline ?? '');
   const [editCompany, setEditCompany] = useState(person.company ?? '');
   const [editCompanies, setEditCompanies] = useState((person.companies ?? []).join(', '));
+  const [editLocation, setEditLocation] = useState(person.location ?? '');
+  const [editRegion, setEditRegion] = useState(person.region ?? '');
   const [editPhotoUrl, setEditPhotoUrl] = useState(person.photoUrl ?? '');
   const [editLinkedinUrl, setEditLinkedinUrl] = useState(person.linkedinUrl ?? '');
 
@@ -40,6 +43,8 @@ export function PersonCard({
     setEditHeadline(person.headline ?? '');
     setEditCompany(person.company ?? '');
     setEditCompanies((person.companies ?? []).join(', '));
+    setEditLocation(person.location ?? '');
+    setEditRegion(person.region ?? '');
     setEditPhotoUrl(person.photoUrl ?? '');
     setEditLinkedinUrl(person.linkedinUrl ?? '');
     setEditing(true);
@@ -57,6 +62,8 @@ export function PersonCard({
       headline: editHeadline,
       company: editCompany,
       companies: parseCompanies(editCompanies),
+      location: editLocation.trim() || undefined,
+      region: inferPersonRegion({ company: editCompany, location: editLocation, region: editRegion }),
       photoUrl: normalizedPhotoUrl,
       photoFocus,
       linkedinUrl: editLinkedinUrl.trim() || undefined,
@@ -131,6 +138,12 @@ export function PersonCard({
           ) : (
             <p className="text-xs text-muted">{person.company || 'No company'}</p>
           )}
+          {(person.location || inferPersonRegion(person)) ? (
+            <p className="mt-1 text-xs text-muted">
+              Current location: {person.location || 'Inferred'}
+              {inferPersonRegion(person) ? ` · ${inferPersonRegion(person)}` : ''}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col gap-1">
           {onUpdate ? (
@@ -217,6 +230,18 @@ export function PersonCard({
             Add every company you share with this person — they'll appear under each
             company's sub-tab.
           </p>
+          <input
+            className="w-full rounded-lg bg-bg px-3 py-2 text-sm"
+            placeholder="Current location (city or source text)"
+            value={editLocation}
+            onChange={(e) => setEditLocation(e.target.value)}
+          />
+          <input
+            className="w-full rounded-lg bg-bg px-3 py-2 text-sm"
+            placeholder="Current region (e.g. SoCal)"
+            value={editRegion}
+            onChange={(e) => setEditRegion(e.target.value)}
+          />
           <input
             type="url"
             className="w-full rounded-lg bg-bg px-3 py-2 text-sm"

@@ -9,7 +9,7 @@ import { EspnRosterPanel } from './components/people/EspnRosterPanel';
 import { CivicRepresentativesPanel } from './components/people/CivicRepresentativesPanel';
 import { WebTeamPagePanel } from './components/people/WebTeamPagePanel';
 import { CategoryTabs } from './components/people/CategoryTabs';
-import { CompanyFilterTabs } from './components/people/CompanyFilterTabs';
+import { CompanyFilterTabs, type PeopleFilter } from './components/people/CompanyFilterTabs';
 import { CategoryHeader } from './components/people/CategoryHeader';
 import { NewCategoryDialog } from './components/people/NewCategoryDialog';
 import { ReviewSessionFlow } from './components/review/ReviewSessionFlow';
@@ -26,6 +26,7 @@ import { parseGenericCsv, parseLinkedInCsv } from './lib/csv-parser';
 import { fetchRoster, rosterToPersonRecords, SPORTS } from './lib/espn';
 import { getSettings, seedPeople } from './lib/storage';
 import { collectCompanyOptions, personHasCompany } from './lib/companies';
+import { collectRegionOptions, personHasRegion } from './lib/regions';
 import type { Category, CsvPersonRow, Person, Settings } from './types';
 
 function useAppSettings() {
@@ -118,7 +119,7 @@ function PeoplePage({
   const { categories, addCategory, editCategory, removeCategory } = categoriesState;
   const navigate = useNavigate();
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [activeCompany, setActiveCompany] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<PeopleFilter>({ type: 'all' });
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Keep activeId in sync when categories list changes.
@@ -149,24 +150,30 @@ function PeoplePage({
     () => collectCompanyOptions(peopleInCategory),
     [peopleInCategory],
   );
+  const regionOptions = useMemo(() => collectRegionOptions(peopleInCategory), [peopleInCategory]);
 
   // Drop the active company filter whenever it no longer applies to the
   // people currently in view (category switch, deletions, edits).
   useEffect(() => {
     if (
-      activeCompany !== null &&
-      !companyOptions.some((c) => c.name.toLowerCase() === activeCompany.toLowerCase())
+      activeFilter.type !== 'all' &&
+      !(activeFilter.type === 'company' ? companyOptions : regionOptions)
+        .some((o) => o.name.toLowerCase() === activeFilter.value.toLowerCase())
     ) {
-      setActiveCompany(null);
+      setActiveFilter({ type: 'all' });
     }
-  }, [companyOptions, activeCompany]);
+  }, [companyOptions, regionOptions, activeFilter]);
+
+  useEffect(() => { setActiveFilter({ type: 'all' }); }, [activeId]);
 
   const visiblePeople = useMemo(
     () =>
-      activeCompany === null
+      activeFilter.type === 'all'
         ? peopleInCategory
-        : peopleInCategory.filter((p) => personHasCompany(p, activeCompany)),
-    [peopleInCategory, activeCompany],
+        : activeFilter.type === 'company'
+          ? peopleInCategory.filter((p) => personHasCompany(p, activeFilter.value))
+          : peopleInCategory.filter((p) => personHasRegion(p, activeFilter.value)),
+    [peopleInCategory, activeFilter],
   );
 
   const [espnImporting, setEspnImporting] = useState(false);
@@ -263,10 +270,11 @@ function PeoplePage({
           />
 
           <CompanyFilterTabs
-            options={companyOptions}
-            activeCompany={activeCompany}
+            companyOptions={companyOptions}
+            regionOptions={regionOptions}
+            activeFilter={activeFilter}
             totalCount={peopleInCategory.length}
-            onSelect={setActiveCompany}
+            onSelect={setActiveFilter}
             onPractice={(company) =>
               navigate(`/review?company=${encodeURIComponent(company)}`)
             }
@@ -306,9 +314,9 @@ function PeoplePage({
             <div className="card text-sm text-muted">Importing roster from ESPN…</div>
           ) : null}
 
-          {activeCompany !== null && visiblePeople.length === 0 ? (
+          {activeFilter.type !== 'all' && visiblePeople.length === 0 ? (
             <div className="card text-sm text-muted">
-              No people at {activeCompany} in this section.
+              No people matching {activeFilter.type === 'company' ? 'company history' : 'current region'} {activeFilter.value} in this section.
             </div>
           ) : null}
 
