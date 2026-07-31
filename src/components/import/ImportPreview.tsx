@@ -19,7 +19,7 @@ export function ImportPreview({
     <section className="card space-y-2">
       <h3 className="font-semibold">Preview ({rows.length})</h3>
       <div className="max-h-52 space-y-1 overflow-auto text-sm">
-        {rows.slice(0, 10).map((row, idx) => <p key={`${row.name}-${idx}`}>{row.name} — {row.company || 'N/A'}</p>)}
+        {rows.slice(0, 10).map((row, idx) => <p key={`${row.name}-${idx}`}>{row.name} — {row.company || 'N/A'}{row.region ? ` · ${row.region}` : ''}</p>)}
       </div>
       <Button onClick={onConfirm} disabled={importing}>
         {importing ? 'Importing…' : 'Confirm import'}

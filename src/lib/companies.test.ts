@@ -44,6 +44,12 @@ describe('personHasCompany', () => {
     expect(personHasCompany(person, 'ACME')).toBe(true);
     expect(personHasCompany(person, 'Initech')).toBe(false);
   });
+
+  it('retains former-company membership without confusing the current company', () => {
+    const formerVast = makePerson({ company: 'SpaceX', companies: ['Vast'] });
+    expect(personHasCompany(formerVast, 'Vast')).toBe(true);
+    expect(formerVast.company).toBe('SpaceX');
+  });
 });
 
 describe('collectCompanyOptions', () => {

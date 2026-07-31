@@ -10,6 +10,8 @@ export interface WebTeamPersonRecord {
   name: string;
   headline?: string;
   company?: string;
+  location?: string;
+  region?: string;
   photoUrl?: string;
   link?: string;
 }

@@ -1,4 +1,5 @@
 import type { CsvPersonRow } from '../types';
+import { inferPersonRegion } from './regions';
 
 // RFC4180-ish line tokenizer that handles quoted fields with embedded commas
 // and escaped double quotes ("").
@@ -76,12 +77,18 @@ export function parseLinkedInCsv(text: string): CsvPersonRow[] {
       const first = has('first name') ? row[map['first name']] : '';
       const last = has('last name') ? row[map['last name']] : '';
       const fullName = first || last ? `${first || ''} ${last || ''}`.trim() : (has('name') ? row[map['name']] : '');
+      const location = (has('current location') ? row[map['current location']] : '') ||
+        (has('location') ? row[map.location] : '') || (has('city') ? row[map.city] : '') || '';
+      const region = (has('region') ? row[map.region] : '') || undefined;
+      const company = (has('company') ? row[map['company']] : '') || '';
       return {
         name: fullName || '',
         // LinkedIn export uses "Position" for the job title; "Headline" only
         // exists in some exports. Prefer headline, fall back to position.
         headline: (has('headline') ? row[map['headline']] : '') || (has('position') ? row[map['position']] : '') || '',
-        company: (has('company') ? row[map['company']] : '') || '',
+        company,
+        location,
+        region: inferPersonRegion({ company, location, region }),
         linkedinUrl: (has('url') ? row[map['url']] : '') || (has('profile url') ? row[map['profile url']] : '') || '',
         // Connections.csv has no image url; older exports may include one.
         photoUrl: (has('image url') ? row[map['image url']] : '') || '',
@@ -105,13 +112,18 @@ export function parseGenericCsv(text: string): CsvPersonRow[] {
   };
 
   return rows
-    .map((row) => ({
-      name: pick(row, ['name', 'full name', 'person']),
-      headline: pick(row, ['headline', 'title', 'role', 'position']),
-      company: pick(row, ['company', 'organization']),
-      linkedinUrl: pick(row, ['linkedin', 'linkedin url', 'profile url', 'url']),
-      photoUrl: pick(row, ['photo', 'photo url', 'image', 'image url']),
-      notes: pick(row, ['notes', 'note']),
-    }))
+    .map((row) => {
+      const company = pick(row, ['company', 'organization']);
+      const location = pick(row, ['current location', 'location', 'city']);
+      const region = pick(row, ['region']);
+      return {
+        name: pick(row, ['name', 'full name', 'person']),
+        headline: pick(row, ['headline', 'title', 'role', 'position']), company, location,
+        region: inferPersonRegion({ company, location, region }),
+        linkedinUrl: pick(row, ['linkedin', 'linkedin url', 'profile url', 'url']),
+        photoUrl: pick(row, ['photo', 'photo url', 'image', 'image url']),
+        notes: pick(row, ['notes', 'note']),
+      };
+    })
     .filter((person) => person.name);
 }

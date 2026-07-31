@@ -4,6 +4,7 @@ import { Button } from '../common/Button';
 import { PhotoUpload } from './PhotoUpload';
 import { capitalizeName, parseNicknames } from '../../lib/text';
 import { detectPhotoFocus } from '../../lib/face-focus';
+import { inferPersonRegion } from '../../lib/regions';
 
 export function PeopleForm({
   categoryId,
@@ -16,6 +17,8 @@ export function PeopleForm({
   const [nicknames, setNicknames] = useState('');
   const [headline, setHeadline] = useState('');
   const [company, setCompany] = useState('');
+  const [location, setLocation] = useState('');
+  const [region, setRegion] = useState('');
   const [photoDataUrl, setPhotoDataUrl] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
   const [linkedinUrl, setLinkedinUrl] = useState('');
@@ -26,12 +29,15 @@ export function PeopleForm({
     const normalizedPhotoDataUrl = photoDataUrl || undefined;
     const normalizedPhotoUrl = photoUrl.trim() || undefined;
     const photoFocus = await detectPhotoFocus(normalizedPhotoDataUrl ?? normalizedPhotoUrl);
+    const normalizedRegion = inferPersonRegion({ company, location, region });
     await onSave({
       name: capitalizeName(name),
       categoryId,
       nicknames: parseNicknames(nicknames),
       headline,
       company,
+      location: location.trim() || undefined,
+      region: normalizedRegion,
       photoDataUrl: normalizedPhotoDataUrl,
       photoUrl: normalizedPhotoUrl,
       photoFocus,
@@ -41,6 +47,8 @@ export function PeopleForm({
     setNicknames('');
     setHeadline('');
     setCompany('');
+    setLocation('');
+    setRegion('');
     setPhotoDataUrl('');
     setPhotoUrl('');
     setLinkedinUrl('');
@@ -52,6 +60,8 @@ export function PeopleForm({
       <input className="w-full rounded-lg bg-bg px-3 py-2" placeholder="Nicknames (comma separated)" value={nicknames} onChange={(e) => setNicknames(e.target.value)} />
       <input className="w-full rounded-lg bg-bg px-3 py-2" placeholder="Headline" value={headline} onChange={(e) => setHeadline(e.target.value)} />
       <input className="w-full rounded-lg bg-bg px-3 py-2" placeholder="Company" value={company} onChange={(e) => setCompany(e.target.value)} />
+      <input className="w-full rounded-lg bg-bg px-3 py-2" placeholder="Current location (city or source text)" value={location} onChange={(e) => setLocation(e.target.value)} />
+      <input className="w-full rounded-lg bg-bg px-3 py-2" placeholder="Current region (e.g. SoCal)" value={region} onChange={(e) => setRegion(e.target.value)} />
       <input
         type="url"
         className="w-full rounded-lg bg-bg px-3 py-2"

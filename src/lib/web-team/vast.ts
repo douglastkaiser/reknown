@@ -37,6 +37,8 @@ function parsePersonCard(card: Element, sourceUrl: string): WebTeamPersonRecord 
     name,
     headline: headline || undefined,
     company: 'Vast',
+    location: 'Long Beach, California',
+    region: 'SoCal',
     photoUrl,
     link: toAbsoluteUrl(linkedInAnchor?.getAttribute('href') ?? fallbackAnchor?.getAttribute('href'), sourceUrl),
   };
