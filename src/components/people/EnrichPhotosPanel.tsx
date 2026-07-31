@@ -118,6 +118,32 @@ export function EnrichPhotosPanel({
     </p>
   );
 
+  const linkedInSessionGuide = (
+    <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 text-xs">
+      <p className="font-semibold text-text">Before enriching: confirm your LinkedIn session</p>
+      <ol className="mt-1 list-decimal space-y-1 pl-4 text-muted">
+        <li>
+          In <strong>this same browser profile</strong>, open{' '}
+          <a
+            href="https://www.linkedin.com/feed/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent hover:underline"
+          >
+            LinkedIn in a new tab
+          </a>{' '}
+          and make sure you see your feed—not a sign-in or verification screen.
+        </li>
+        <li>
+          Finish any sign-in or security check there, then return here. The LinkedIn tab does
+          <strong> not</strong> need to stay open; the extension reuses that browser session in the
+          background.
+        </li>
+        <li>Leave this Reknown tab open while the batch runs.</li>
+      </ol>
+    </div>
+  );
+
   useEffect(() => {
     const now = new Date().toISOString();
     console.log(
@@ -147,6 +173,7 @@ export function EnrichPhotosPanel({
           Install the reknown browser extension to automatically fetch LinkedIn
           profile photos and work histories using your own logged-in session.
         </p>
+        {linkedInSessionGuide}
         <ul className="list-disc pl-5 text-xs text-muted">
           <li>
             <strong>Firefox:</strong> open <code>about:debugging</code> → "Load
@@ -299,6 +326,7 @@ export function EnrichPhotosPanel({
   return (
     <div className="card space-y-3">
       {debugStatus}
+      {linkedInSessionGuide}
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-semibold">Enrich Profiles from LinkedIn</h3>
@@ -373,10 +401,15 @@ export function EnrichPhotosPanel({
       {completed ? (
         <div className="space-y-2 rounded-lg border border-border bg-bg/50 p-3 text-xs">
           {aborted ? (
-            <p className="text-red-400">
-              Aborted{aborted.reason ? `: ${ERROR_LABELS[aborted.reason as EnrichErrorCode] ?? aborted.reason}` : ''}.
-              Check your LinkedIn session and retry.
-            </p>
+            <div className="space-y-1 text-red-400">
+              <p>
+                Aborted{aborted.reason ? `: ${ERROR_LABELS[aborted.reason as EnrichErrorCode] ?? aborted.reason}` : ''}.
+              </p>
+              <p>
+                Open LinkedIn in another tab in this browser profile, sign in or complete any
+                verification, then return here and retry. You can close the LinkedIn tab afterward.
+              </p>
+            </div>
           ) : (
             <p>
               {enrichment.mode === 'recheck'
