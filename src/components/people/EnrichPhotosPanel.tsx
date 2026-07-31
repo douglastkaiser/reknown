@@ -24,6 +24,7 @@ const ERROR_LABELS: Record<EnrichErrorCode, string> = {
   parse_error: 'Failed to parse profile response',
   login_wall: 'LinkedIn login wall',
   rate_limited: 'Rate limited by LinkedIn',
+  account_activity_warning: 'LinkedIn account activity warning',
   batch_already_running: 'Another enrichment batch is already running',
   'reject.owner_mismatch': 'Profile owner mismatch',
   owner_mismatch_stable: 'Stable owner mismatch (fail-fast)',
@@ -215,6 +216,7 @@ export function EnrichPhotosPanel({
     aborted?.reason === 'rate_limited' &&
     typeof cooldownRemainingMs === 'number' &&
     cooldownRemainingMs > 0;
+  const hasAccountActivityWarning = aborted?.reason === 'account_activity_warning';
 
   function retryFailed() {
     const failedIds = new Set(failedResults.map((r) => r.id));
@@ -405,10 +407,22 @@ export function EnrichPhotosPanel({
               <p>
                 Aborted{aborted.reason ? `: ${ERROR_LABELS[aborted.reason as EnrichErrorCode] ?? aborted.reason}` : ''}.
               </p>
-              <p>
-                Open LinkedIn in another tab in this browser profile, sign in or complete any
-                verification, then return here and retry. You can close the LinkedIn tab afterward.
-              </p>
+              {hasAccountActivityWarning ? (
+                <div className="space-y-1">
+                  <p><strong>Do not retry enrichment.</strong> LinkedIn detected high-volume profile access.</p>
+                  <p>
+                    Stop and remove or disable this extension, review other browser extensions and
+                    connected apps that access LinkedIn, then secure your account if you do not
+                    recognize the activity. Use LinkedIn's official data export and add photos
+                    manually in Reknown instead.
+                  </p>
+                </div>
+              ) : (
+                <p>
+                  Open LinkedIn in another tab in this browser profile, sign in or complete any
+                  verification, then return here and retry. You can close the LinkedIn tab afterward.
+                </p>
+              )}
             </div>
           ) : (
             <p>
@@ -436,9 +450,11 @@ export function EnrichPhotosPanel({
                   ))}
                 </ul>
               </details>
-              <Button type="button" onClick={retryFailed}>
-                Retry failed
-              </Button>
+              {!hasAccountActivityWarning ? (
+                <Button type="button" onClick={retryFailed}>
+                  Retry failed
+                </Button>
+              ) : null}
             </>
           ) : null}
         </div>
