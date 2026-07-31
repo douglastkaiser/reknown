@@ -4294,6 +4294,7 @@ async function enrichOne(person, context) {
     photoBlob: null,
     photoHash: null,
     companies: [],
+    companiesScraped: false,
   };
   const assertionMeta =
     context && context.assertionMeta && typeof context.assertionMeta === 'object'
@@ -4335,8 +4336,8 @@ async function enrichOne(person, context) {
     // produced (success or a photo-specific failure) so the web app can list
     // the person under every employer, not just their current one.
     if (
+      enrichLocalState.companiesScraped &&
       Array.isArray(enrichLocalState.companies) &&
-      enrichLocalState.companies.length &&
       !Object.prototype.hasOwnProperty.call(resultObj, 'companies')
     ) {
       resultObj.companies = enrichLocalState.companies.slice();
@@ -4567,6 +4568,7 @@ async function enrichOne(person, context) {
   // additive and defensive — extractProfileCompanies never throws — so it can
   // sit ahead of photo extraction without risking the existing pipeline.
   enrichLocalState.companies = extractProfileCompanies(html);
+  enrichLocalState.companiesScraped = true;
   if (DEBUG_VERBOSE) {
     console.log(
       '[reknown-ext] enrichOne companies scraped',

@@ -8,6 +8,7 @@ import {
 } from '../../hooks/usePhotoEnrichment';
 import { detectPhotoFocus } from '../../lib/face-focus';
 import { mergeScrapedCompanies } from '../../lib/companies';
+import { needsProfileEnrichment } from '../../lib/profile-enrichment';
 
 const ERROR_LABELS: Record<EnrichErrorCode, string> = {
   invalid_url: 'Invalid LinkedIn URL',
@@ -63,7 +64,10 @@ export function EnrichPhotosPanel({
   const companyUpdate = (id: string, companies: string[]): Partial<Person> | null => {
     const person = people.find((p) => p.id === id);
     const merged = mergeScrapedCompanies(person?.companies, companies, person?.company);
-    return merged ? { companies: merged } : null;
+    if (merged) return { companies: merged };
+    // Persist [] as a completion marker so a profile with no additional
+    // employers is not needlessly re-enriched on every pass.
+    return !Array.isArray(person?.companies) ? { companies: [] } : null;
   };
   const enrichment = usePhotoEnrichment({
     onPhotoFetched: async (id, photoDataUrl, photoUrl, companies) => {
@@ -76,7 +80,7 @@ export function EnrichPhotosPanel({
       const photoUpdates: Partial<Person> = photoUrl
         ? { photoDataUrl, photoUrl, photoFocus }
         : { photoDataUrl, photoFocus };
-      const companyUpdates = companies?.length ? companyUpdate(id, companies) : null;
+      const companyUpdates = Array.isArray(companies) ? companyUpdate(id, companies) : null;
       return onUpdate(id, companyUpdates ? { ...photoUpdates, ...companyUpdates } : photoUpdates);
     },
     // Photo failed but a work history came back — persist it on its own.
@@ -87,7 +91,7 @@ export function EnrichPhotosPanel({
   });
 
   const eligible = useMemo(
-    () => people.filter((p) => p.linkedinUrl && !p.photoDataUrl && !p.photoUrl),
+    () => people.filter((p) => p.linkedinUrl && needsProfileEnrichment(p)),
     [people],
   );
   const withLinkedinUrl = useMemo(
@@ -137,11 +141,11 @@ export function EnrichPhotosPanel({
   if (!extensionAvailable) {
     return (
       <div className="card space-y-2">
-        <h3 className="font-semibold">Enrich Photos from LinkedIn</h3>
+        <h3 className="font-semibold">Enrich Profiles from LinkedIn</h3>
         {debugStatus}
         <p className="text-sm text-muted">
           Install the reknown browser extension to automatically fetch LinkedIn
-          profile photos for your connections using your own logged-in session.
+          profile photos and work histories using your own logged-in session.
         </p>
         <ul className="list-disc pl-5 text-xs text-muted">
           <li>
@@ -231,12 +235,12 @@ export function EnrichPhotosPanel({
       let reason: string;
       if (people.length === 0) {
         reason =
-          "No people imported yet. This extension only fills in photos for " +
+          "No people imported yet. This extension only fills in profile data for " +
           "people already on your list — go to Import CSV above (or the About page for full instructions) first.";
       } else if (withLinkedinUrl === 0) {
         reason = 'No imported people have a LinkedIn URL. Add LinkedIn URLs first.';
       } else if (alreadyHavePhoto >= withLinkedinUrl) {
-        reason = 'Everyone with a LinkedIn URL already has a photo.';
+        reason = 'Everyone with a LinkedIn URL already has complete enrichment data.';
       } else {
         reason = 'No eligible people to enrich.';
       }
@@ -287,19 +291,19 @@ export function EnrichPhotosPanel({
 
   const subtitle =
     people.length === 0
-      ? 'Import your LinkedIn CSV first — this extension fills in profile photos for people already on this list.'
+      ? 'Import your LinkedIn CSV first — this extension fills in profile data for people already on this list.'
       : withLinkedinUrl === 0
       ? 'No imported people have a LinkedIn URL. Edit them to add URLs, then click Enrich.'
-      : `${eligible.length} ${eligible.length === 1 ? 'person has' : 'people have'} a LinkedIn URL but no photo.`;
+      : `${eligible.length} ${eligible.length === 1 ? 'profile needs' : 'profiles need'} photo or company data.`;
 
   return (
     <div className="card space-y-3">
       {debugStatus}
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-semibold">Enrich Photos from LinkedIn</h3>
+          <h3 className="font-semibold">Enrich Profiles from LinkedIn</h3>
           <p className="text-[11px] text-muted/80">
-            Uses your logged-in LinkedIn session to fetch profile photos for people you've
+            Uses your logged-in LinkedIn session to fetch profile photos and work histories for people you've
             already imported. It does not scrape your connections list — you import those via
             CSV first.
           </p>
@@ -377,7 +381,7 @@ export function EnrichPhotosPanel({
             <p>
               {enrichment.mode === 'recheck'
                 ? `Re-checked ${progress.total} ${progress.total === 1 ? 'photo' : 'photos'}; updated ${progress.succeeded}.`
-                : `Added photos for ${progress.succeeded} of ${progress.total} people.`}
+                : `Updated profile data for ${progress.succeeded} of ${progress.total} people.`}
               {progress.failed > 0 ? ` ${progress.failed} failed.` : ''}
             </p>
           )}

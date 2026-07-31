@@ -7,6 +7,7 @@ import {
   type PhotoIntegritySpec,
 } from '../lib/photo-integrity';
 import type { Person } from '../types';
+import { needsProfileEnrichment } from '../lib/profile-enrichment';
 
 export type EnrichErrorCode =
   | 'invalid_url'
@@ -344,7 +345,12 @@ export function usePhotoEnrichment({
           });
           const scrapedCompanies = readCompanies(data.companies);
           void Promise.resolve(
-            onPhotoFetchedRef.current(id, dataUrl, rawUrl, scrapedCompanies),
+            onPhotoFetchedRef.current(
+              id,
+              dataUrl,
+              rawUrl,
+              Array.isArray(data.companies) ? scrapedCompanies : undefined,
+            ),
           ).catch((err) => console.error('[reknown] onPhotoFetched failed', err));
           setResults((r) => [...r, { id, name: data.personName ?? '', status: 'success' }]);
           setProgress((p) => ({
@@ -358,7 +364,7 @@ export function usePhotoEnrichment({
           // The photo failed, but if we still scraped a work history, capture
           // it. onPhotoFetched won't fire here, so this is the only path.
           const scrapedCompanies = readCompanies(data.companies);
-          if (scrapedCompanies.length && onCompaniesFetchedRef.current) {
+          if (Array.isArray(data.companies) && onCompaniesFetchedRef.current) {
             void Promise.resolve(
               onCompaniesFetchedRef.current(data.personId, scrapedCompanies),
             ).catch((err) => console.error('[reknown] onCompaniesFetched failed', err));
@@ -426,12 +432,13 @@ export function usePhotoEnrichment({
   const startEnrichment = useCallback((people: Person[], options?: { mode?: EnrichMode }) => {
     const mode: EnrichMode = options?.mode ?? 'fill';
     console.log('[reknown] startEnrichment called with', people.length, 'people', 'mode=' + mode);
-    // In `fill` mode we only fetch photos for people who don't have one yet.
+    // In `fill` mode fetch profiles missing any currently supported enriched
+    // field. This also upgrades people enriched before company history existed.
     // In `recheck` mode we re-fetch for everyone with a LinkedIn URL, so a
     // wrong photo saved by an older extension version gets overwritten with a
     // freshly-disambiguated one.
     const eligible = people
-      .filter((p) => p.linkedinUrl && (mode === 'recheck' || (!p.photoDataUrl && !p.photoUrl)))
+      .filter((p) => p.linkedinUrl && (mode === 'recheck' || needsProfileEnrichment(p)))
       .map((p) => ({ id: p.id, name: p.name, linkedinUrl: p.linkedinUrl! }));
     console.log('[reknown] startEnrichment eligible after filter=' + eligible.length);
     if (eligible.length === 0) {
