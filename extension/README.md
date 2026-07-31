@@ -101,12 +101,12 @@ This is the easiest Firefox path **if you used Option A**:
 
 ## Using it for the first time
 
-1. **Make sure you're logged into LinkedIn** in the same browser where you installed the extension. Open <https://www.linkedin.com/> in a new tab and confirm you can see your feed. If you see a login page, log in first.
+1. **Make sure you're logged into LinkedIn** in the same browser profile where you installed the extension. Open <https://www.linkedin.com/feed/> in a new tab and confirm you can see your feed—not a login or verification page. Complete any sign-in or security check before enriching. The LinkedIn tab does **not** need to remain open afterward; the extension reuses that browser session in the background.
 2. Open reknown: <https://douglastkaiser.github.io/reknown/> (or whatever URL you use).
 3. Make sure you've imported your LinkedIn CSV first. If you haven't, go to the **People** tab in reknown → **Import CSV** → follow the on-screen steps (there are also instructions on reknown's **About** page).
 4. Still on the People tab, you should now see a new section at the top called **"Enrich Photos from LinkedIn"** with a button like `Enrich (47)` (where 47 = the number of people with a LinkedIn URL but no photo yet).
    - **If you don't see that section,** the extension isn't being detected. Try: refresh the page, make sure the extension is enabled in your browser's extensions page, and make sure the URL you're visiting reknown on matches one of the supported origins (see below).
-5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the tab open and let it run. By default, the extension uses a conservative **`safe`** throttle profile (about 4–7 seconds per person, 60-second pause every 12 people) to reduce LinkedIn rate-limit risk.
+5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the **reknown** tab open and let it run. By default, the extension uses a conservative **`safe`** throttle profile (about 4–7 seconds per person, 60-second pause every 12 people) to reduce LinkedIn rate-limit risk.
 6. When it's done, you'll see a summary like `Added photos for 43 of 47 people. 4 failed.` You can click **Retry failed** to try the stragglers again.
 
 > **Work history comes along for free.** While fetching each photo, the extension also reads the person's listed companies and merges them into that person's record (it never overwrites anything you typed by hand). Those companies feed the **Filter by company** sub-tabs on the People tab. Because the history is captured whenever a profile is read — even for people whose photo couldn't be fetched — running **Recheck** is a good way to backfill companies for connections you imported before installing this version.

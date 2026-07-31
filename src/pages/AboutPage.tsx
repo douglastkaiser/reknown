@@ -169,7 +169,9 @@ export function AboutPage() {
               >
                 linkedin.com
               </a>{' '}
-              in another tab and check.
+              in another tab and confirm you can see your feed rather than a sign-in or verification
+              screen. It must be the same browser profile where the extension is installed. Once
+              confirmed, that tab can be closed; the extension uses the session in the background.
             </li>
             <li>
               Refresh this page, go to the <span className="text-text">People</span> tab, and the
@@ -177,8 +179,9 @@ export function AboutPage() {
               of people it can fetch photos for.
             </li>
             <li>
-              Click <span className="text-text">Enrich (N)</span> and let it run. Expect roughly 3
-              seconds per person, with a 30-second pause every 25 people.
+              Click <span className="text-text">Enrich (N)</span> and let it run. The default safe
+              pace takes about 4–7 seconds per person, with a 60-second pause every 12 people. Keep
+              the Reknown tab open until the batch finishes.
             </li>
           </ol>
         </div>
