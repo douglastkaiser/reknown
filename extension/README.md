@@ -106,7 +106,7 @@ This is the easiest Firefox path **if you used Option A**:
 3. Make sure you've imported your LinkedIn CSV first. If you haven't, go to the **People** tab in reknown → **Import CSV** → follow the on-screen steps (there are also instructions on reknown's **About** page).
 4. Still on the People tab, you should now see a new section at the top called **"Enrich Photos from LinkedIn"** with a button like `Enrich (47)` (where 47 = the number of people with a LinkedIn URL but no photo yet).
    - **If you don't see that section,** the extension isn't being detected. Try: refresh the page, make sure the extension is enabled in your browser's extensions page, and make sure the URL you're visiting reknown on matches one of the supported origins (see below).
-5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the **reknown** tab open and let it run. By default, the extension uses a conservative **`safe`** throttle profile (about 4–7 seconds per person, 60-second pause every 12 people) to reduce LinkedIn rate-limit risk.
+5. Click **Enrich**. A progress bar appears. Photos stream in one by one — leave the **reknown** tab open and let it run. By default, the extension uses a conservative **`safe`** throttle profile: every LinkedIn or LICDN request is separated by 60–75 seconds, with a 5-minute pause after every 3 people.
 6. When it's done, you'll see a summary like `Added photos for 43 of 47 people. 4 failed.` You can click **Retry failed** to try the stragglers again.
 
 > **Work history comes along for free.** While fetching each photo, the extension also reads the person's listed companies and merges them into that person's record (it never overwrites anything you typed by hand). Those companies feed the **Filter by company** sub-tabs on the People tab. Because the history is captured whenever a profile is read — even for people whose photo couldn't be fetched — running **Recheck** is a good way to backfill companies for connections you imported before installing this version.
@@ -115,6 +115,7 @@ This is the easiest Firefox path **if you used Option A**:
 
 ## Things that can go wrong (and how to fix them)
 
+- **LinkedIn shows an “activity on your account” / high-volume profile-data warning.** Stop immediately and do not retry enrichment. Disable or remove this extension, review every browser extension and third-party app connected to LinkedIn, and secure your account if you do not recognize the activity. Reknown detects the warning page and aborts the batch, but no request cadence can guarantee that LinkedIn will permit automated profile access. Continue with LinkedIn's official CSV export and manual photo uploads instead.
 - **"LinkedIn login wall" error and the batch aborts.** Your LinkedIn session expired or LinkedIn wants you to verify something. Open linkedin.com in another tab, log in / do the verification, come back to reknown, and click **Retry failed**.
 - **"Rate limited" error.** LinkedIn thinks you're going too fast. Wait 15–30 minutes before trying again. The extension already throttles, but if you've been browsing LinkedIn aggressively in the same session it can still trip.
 - **Some people got "No photo found".** Not everyone has a public profile photo, or LinkedIn is showing only the default silhouette for them. The extension skips those on purpose.
@@ -128,7 +129,7 @@ This is the easiest Firefox path **if you used Option A**:
 
 - The extension **only ever fetches** URLs that match `https://www.linkedin.com/in/*`. Nothing else.
 - All data (profile HTML, photos, work history, everything) stays on your computer. The profile HTML is parsed locally to pull out the photo and the list of companies; only those extracted values are handed to reknown via `window.postMessage`, and reknown stores them in IndexedDB — same place as every other photo you'd add manually.
-- Throttling is built in with profiles. Default is `safe`: ~4–7 seconds between requests, 60-second pause every 12 requests, instant abort on any rate-limit or login-wall response.
+- Throttling is built in with profiles. Default is `safe`: 60–75 seconds between every outbound LinkedIn or LICDN request, a 5-minute pause after every 3 people, and an instant abort on rate-limit, login-wall, or account-activity warning responses. A bounded random component spreads request load, but the extension deliberately does not simulate human interaction or add behavior intended to disguise automation.
 - The content script only runs on reknown's origins. It won't interfere with LinkedIn browsing, even though it has permission to fetch from LinkedIn in the background.
 
 ---
@@ -138,15 +139,17 @@ This is the easiest Firefox path **if you used Option A**:
 The extension supports two profiles:
 
 - `safe` (**default**) — slower and safer for LinkedIn:
-  - `perRequestMinMs=4000`
-  - `perRequestJitterMs=3000` (so each request waits ~4–7s)
-  - `batchSize=12`
-  - `batchPauseMs=60000`
+  - `perRequestMinMs=60000`
+  - `perRequestJitterMs=15000` (60–75 seconds between requests)
+  - `batchSize=3`
+  - `batchPauseMs=300000`
 - `normal` — legacy/faster behavior:
-  - `perRequestMinMs=2000`
-  - `perRequestJitterMs=2000` (so each request waits ~2–4s)
-  - `batchSize=25`
-  - `batchPauseMs=30000`
+  - `perRequestMinMs=30000`
+  - `perRequestJitterMs=10000` (30–40 seconds between requests)
+  - `batchSize=5`
+  - `batchPauseMs=120000`
+
+The delay is enforced centrally for profile HTML, overlay, and image requests—not only between people. The bounded jitter is load-spreading safety pacing, not simulated clicks, scrolling, navigation, or an attempt to evade LinkedIn controls.
 
 ### Switch profile from the web app page (message-based)
 

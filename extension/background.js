@@ -9,20 +9,20 @@ const THROTTLE_STORAGE_KEY = 'reknownEnrichThrottleProfile';
 const DEBUG_CONFIG_STORAGE_KEY = 'reknownEnrichDebugConfig';
 const THROTTLE_PROFILES = {
   normal: {
-    perRequestMinMs: 2000,
-    perRequestJitterMs: 2000,
-    batchSize: 25,
-    batchPauseMs: 30000,
-    rateLimitCooldownMs: 20 * 60 * 1000,
+    perRequestMinMs: 30000,
+    perRequestJitterMs: 10000,
+    batchSize: 5,
+    batchPauseMs: 2 * 60 * 1000,
+    rateLimitCooldownMs: 60 * 60 * 1000,
   },
   // Default for LinkedIn enrichment: slower cadence lowers risk of authwall /
   // anti-automation responses during long runs.
   safe: {
-    perRequestMinMs: 4000,
-    perRequestJitterMs: 3000,
-    batchSize: 12,
-    batchPauseMs: 60000,
-    rateLimitCooldownMs: 20 * 60 * 1000,
+    perRequestMinMs: 60000,
+    perRequestJitterMs: 15000,
+    batchSize: 3,
+    batchPauseMs: 5 * 60 * 1000,
+    rateLimitCooldownMs: 2 * 60 * 60 * 1000,
   },
 };
 const DEFAULT_THROTTLE_PROFILE = 'safe';
@@ -134,6 +134,7 @@ const activeBatches = new Map(); // requestId -> { cancelled: boolean }
 let rateLimitCooldownUntil = 0;
 let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
 let throttleConfigReadyPromise = null;
+let lastLinkedInRequestAt = 0;
 
 function normalizeDebugConfig(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -368,27 +369,9 @@ function ensureStartupHealthProbe() {
       console.log('[reknown-ext] startup.health_probe skipped test_runtime');
       return;
     }
-    const probeUrl = 'https://www.linkedin.com/';
-    const startedAt = Date.now();
-    try {
-      const response = await fetch(probeUrl, { credentials: 'include', redirect: 'follow' });
-      console.log(
-        '[reknown-ext] startup.health_probe pass',
-        'url=' + probeUrl,
-        'status=' + response.status,
-        'ok=' + response.ok,
-        'durationMs=' + (Date.now() - startedAt),
-      );
-    } catch (err) {
-      const errorCode = err && typeof err.code === 'string' ? err.code : 'unknown_error';
-      console.warn(
-        '[reknown-ext] startup.health_probe fail',
-        'url=' + probeUrl,
-        'errorCode=' + errorCode,
-        'error=' + String(err),
-        'durationMs=' + (Date.now() - startedAt),
-      );
-    }
+    // Do not make a speculative LinkedIn request merely to test connectivity.
+    // Every request should be directly attributable to a user-started batch.
+    console.log('[reknown-ext] startup.health_probe skipped no_speculative_requests');
   })();
   return startupHealthProbePromise;
 }
@@ -494,6 +477,26 @@ async function sleepCancellable(ms, batch) {
     await sleep(chunk);
     remaining -= chunk;
   }
+}
+
+async function waitForLinkedInRequestSlot(url, batch) {
+  const hostname = getUrlDiagnostics(url).hostname || '';
+  if (!/(^|\.)(linkedin|licdn)\.com$/i.test(hostname)) return;
+  if (typeof navigator !== 'undefined' && /vitest/i.test(String(navigator.userAgent || ''))) return;
+  const throttle = getActiveThrottleConfig();
+  // Randomized load-spreading prevents multiple clients started together from
+  // repeatedly landing on the same boundary. It is pacing only: the extension
+  // does not synthesize clicks, scrolling, navigation, or other human actions.
+  const minimumGapMs =
+    throttle.perRequestMinMs + Math.random() * throttle.perRequestJitterMs;
+  const remainingMs = Math.max(0, lastLinkedInRequestAt + minimumGapMs - Date.now());
+  if (remainingMs > 0) await sleepCancellable(remainingMs, batch || { cancelled: false });
+  if (batch && batch.cancelled) {
+    throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_while_pacing', {
+      isBatchCancelled: true,
+    });
+  }
+  lastLinkedInRequestAt = Date.now();
 }
 
 function createTypedFetchError(code, message, details) {
@@ -618,6 +621,7 @@ async function fetchWithTimeout(url, options, controlOptions) {
     if (controller) controller.abort();
     throw createTypedFetchError('fetch_cancelled', 'request_cancelled_before_fetch', { isRequestCancelled: true });
   }
+  await waitForLinkedInRequestSlot(url, batch);
   if (externalSignal) {
     const onExternalAbort = () => {
       abortControllerTriggered = !!controller;
@@ -761,6 +765,27 @@ function isLoginWall(response) {
 function isRateLimited(response) {
   if (!response) return false;
   return response.status === 429 || response.status === 999;
+}
+
+// LinkedIn can return an HTTP 200 page that is neither a profile nor a normal
+// login checkpoint when it has flagged the account for high-volume access.
+// Treat the warning as a hard stop: continuing to request profiles after this
+// page appears can put the user's account at greater risk.
+function isAccountActivityWarning(html) {
+  const text = String(html || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  const mentionsHighVolume =
+    text.includes('accessed a high volume of linkedin profile data') ||
+    text.includes('high volume of linkedin profile data');
+  const asksToRemoveTools =
+    text.includes('review your browser extensions') &&
+    (text.includes('third-party apps') || text.includes('third-party tool'));
+  return mentionsHighVolume && asksToRemoveTools;
 }
 
 function extractFromJsonLd(html) {
@@ -4564,6 +4589,18 @@ async function enrichOne(person, context) {
       },
     });
   }
+  if (isAccountActivityWarning(html)) {
+    console.warn(
+      '[reknown-ext] LinkedIn account activity warning detected; stopping batch immediately',
+      'requestId=' + (eventBase.requestId || ''),
+      'personId=' + (eventBase.personId || ''),
+    );
+    return finalizeResult({
+      status: 'error',
+      error: 'account_activity_warning',
+      fatal: true,
+    });
+  }
   // Scrape the work history now that we have the profile HTML. This is
   // additive and defensive — extractProfileCompanies never throws — so it can
   // sit ahead of photo extraction without risking the existing pipeline.
@@ -5451,11 +5488,9 @@ async function runBatch(requestId, people, tabId) {
           firstFailureTimestamp: firstFailureTimestamp,
         });
       }
-      // Throttle before next request (skip after last).
+      // Every outbound LinkedIn/LICDN fetch is paced centrally in
+      // waitForLinkedInRequestSlot. This loop only adds longer batch rests.
       if (i < people.length - 1) {
-        const delay = throttleCfg.perRequestMinMs + Math.random() * throttleCfg.perRequestJitterMs;
-        await sleepCancellable(delay, batch);
-        if (batch.cancelled) break;
         if ((i + 1) % throttleCfg.batchSize === 0) {
           sendToTab(tabId, {
             type: 'REKNOWN_ENRICH_PROGRESS',

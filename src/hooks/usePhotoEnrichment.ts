@@ -23,6 +23,7 @@ export type EnrichErrorCode =
   | 'parse_error'
   | 'login_wall'
   | 'rate_limited'
+  | 'account_activity_warning'
   | 'batch_already_running'
   | 'reject.owner_mismatch'
   | 'owner_mismatch_stable';
