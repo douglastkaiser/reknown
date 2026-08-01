@@ -601,6 +601,55 @@ function isFetchCancelledError(err) {
   return !!(err && typeof err === 'object' && err.code === 'fetch_cancelled');
 }
 
+function isRateLimitedError(err) {
+  return !!(err && typeof err === 'object' && err.code === 'rate_limited');
+}
+
+function parseRetryAfter(value, nowMs) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return Math.max(0, Math.ceil(Number(raw)));
+  const retryAt = Date.parse(raw);
+  if (!Number.isFinite(retryAt)) return null;
+  return Math.max(0, Math.ceil((retryAt - (typeof nowMs === 'number' ? nowMs : Date.now())) / 1000));
+}
+
+function isLinkedInHost(url) {
+  const hostname = getUrlDiagnostics(url).hostname || '';
+  return /(^|\.)(linkedin|licdn)\.com$/i.test(hostname);
+}
+
+async function classifyLinkedInResponse(response, requestUrl) {
+  if (!response || (!isLinkedInHost(requestUrl) && !isLinkedInHost(response.url || ''))) return;
+  const retryAfterSeconds = parseRetryAfter(response.headers && response.headers.get
+    ? response.headers.get('retry-after')
+    : null);
+  let trigger = null;
+  if (response.status === 429 || response.status === 999) trigger = 'http_' + response.status;
+  else if (isLoginWall(response)) trigger = 'login_or_checkpoint_redirect';
+
+  if (!trigger && response.clone && response.headers && response.headers.get) {
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType || /text\/html|application\/xhtml\+xml/i.test(contentType)) {
+      try {
+        const html = await response.clone().text();
+        if (isAccountActivityWarning(html)) trigger = 'account_activity_warning';
+      } catch (err) {
+        if (DEBUG_VERBOSE) console.warn('[reknown-ext] response classification body read failed', String(err));
+      }
+    }
+  }
+  if (trigger) {
+    throw createTypedFetchError('rate_limited', 'LinkedIn protective response: ' + trigger, {
+      trigger: trigger,
+      httpStatus: response.status,
+      retryAfterSeconds: retryAfterSeconds,
+      retryAfterMs: retryAfterSeconds == null ? null : retryAfterSeconds * 1000,
+      responseUrl: response.url || String(requestUrl || ''),
+    });
+  }
+}
+
 function getInternalErrorSubreason(err) {
   const name = err && typeof err.name === 'string' ? err.name : '';
   if (name === 'ReferenceError') return 'reference_error';
@@ -752,8 +801,10 @@ async function fetchWithTimeout(url, options, controlOptions) {
       abortReason: abortReason,
       diagnosticContext: diagnosticContext,
     });
+    await classifyLinkedInResponse(response, url);
     return response;
   } catch (err) {
+    if (isRateLimitedError(err)) throw err;
     const abortErr = err && (err.name === 'AbortError' || err.code === 20);
     console.warn('[reknown-ext] fetch.diagnostics.exception', {
       exception: {
@@ -830,10 +881,13 @@ function getRateLimitCooldownMeta(nowMs) {
   };
 }
 
-async function setRateLimitCooldown(nowMs) {
+async function setRateLimitCooldown(nowMs, rateLimitError) {
   const throttleCfg = getActiveThrottleConfig();
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
-  rateLimitCooldownUntil = now + throttleCfg.rateLimitCooldownMs;
+  const retryAfterMs = rateLimitError && Number.isFinite(rateLimitError.retryAfterMs)
+    ? Math.max(0, rateLimitError.retryAfterMs)
+    : 0;
+  rateLimitCooldownUntil = now + Math.max(throttleCfg.rateLimitCooldownMs, retryAfterMs);
   await persistProtectionTimestamp(
     RATE_LIMIT_COOLDOWN_STORAGE_KEY,
     rateLimitCooldownUntil,
@@ -847,7 +901,13 @@ async function setRateLimitCooldown(nowMs) {
     'cooldownUntil=' + new Date(rateLimitCooldownUntil).toISOString(),
     'remainingMs=' + meta.cooldownRemainingMs,
   );
-  return meta;
+  return Object.assign({}, meta, {
+    retryAfterSeconds: rateLimitError && Number.isFinite(rateLimitError.retryAfterSeconds)
+      ? rateLimitError.retryAfterSeconds
+      : null,
+    trigger: rateLimitError && rateLimitError.trigger ? rateLimitError.trigger : null,
+    httpStatus: rateLimitError && Number.isFinite(rateLimitError.httpStatus) ? rateLimitError.httpStatus : null,
+  });
 }
 
 function isLoginWall(response) {
@@ -2516,6 +2576,7 @@ async function extractFromOverlayPhoto(slug, options) {
       { timeoutMs: overlayOptions.timeoutMs, batch: overlayOptions.batch },
     );
   } catch (err) {
+    if (isRateLimitedError(err)) throw err;
     const rejectReason = isFetchTimeoutError(err) ? 'overlay_fetch_timeout' : 'overlay_fetch_failed';
     if (DEBUG_VERBOSE) {
       console.warn('[reknown-ext] overlay-photo: reject reason', rejectReason, String(err));
@@ -3744,6 +3805,7 @@ async function extractPhotoUrl(html, slug, eventContext, options) {
         });
       }
     } catch (err) {
+      if (isRateLimitedError(err)) throw err;
       console.warn('[reknown-ext] strategy failed', 'overlay-photo', err);
       outcomes.push({
         strategy: 'overlay-photo',
@@ -4565,6 +4627,7 @@ async function enrichOne(person, context) {
       );
     });
   } catch (err) {
+    if (isRateLimitedError(err)) throw err;
     fetchProfileDurationMs = Date.now() - fetchStart;
     const fetchErrorCode =
       err && typeof err === 'object' && typeof err.errorCode === 'string'
@@ -4620,11 +4683,9 @@ async function enrichOne(person, context) {
     );
   }
   if (isRateLimited(pageRes)) {
-    return finalizeResult({
-      status: 'error',
-      error: 'rate_limited',
-      fatal: true,
-      fetchProfileDurationMs: fetchProfileDurationMs,
+    throw createTypedFetchError('rate_limited', 'LinkedIn protective HTTP response', {
+      trigger: 'http_' + pageRes.status,
+      httpStatus: pageRes.status,
     });
   }
   if (isLoginWall(pageRes)) {
@@ -4691,10 +4752,9 @@ async function enrichOne(person, context) {
       'requestId=' + (eventBase.requestId || ''),
       'personId=' + (eventBase.personId || ''),
     );
-    return finalizeResult({
-      status: 'error',
-      error: 'account_activity_warning',
-      fatal: true,
+    throw createTypedFetchError('rate_limited', 'LinkedIn account activity warning', {
+      trigger: 'account_activity_warning',
+      httpStatus: pageRes.status,
     });
   }
   // Scrape the work history now that we have the profile HTML. This is
@@ -4926,6 +4986,7 @@ async function enrichOne(person, context) {
         }
       }
     } catch (retryErr) {
+      if (isRateLimitedError(retryErr)) throw retryErr;
       if (DEBUG_VERBOSE) console.warn('[reknown-ext] profile retry fetch threw', String(retryErr));
       if (isFetchCancelledError(retryErr)) {
         console.log(
@@ -5161,6 +5222,7 @@ async function enrichOne(person, context) {
       );
     });
   } catch (err) {
+    if (isRateLimitedError(err)) throw err;
     const rejectReason = isFetchCancelledError(err)
       ? 'cancelled'
       : (isFetchTimeoutError(err) ? 'fetch_timeout' : 'fetch_failed');
@@ -5422,26 +5484,30 @@ async function runBatch(requestId, people, tabId) {
           batch,
         });
       } catch (err) {
-        const stage = 'runBatch.enrichOne';
-        const errorStackPreview = trimErrorStack(err, 7);
-        console.error(
-          '[reknown-ext] unexpected exception in enrichOne',
-          JSON.stringify({
-            stage: stage,
+        if (isRateLimitedError(err)) {
+          result = { status: 'error', error: 'rate_limited', fatal: true, rateLimitError: err };
+        } else {
+          const stage = 'runBatch.enrichOne';
+          const errorStackPreview = trimErrorStack(err, 7);
+          console.error(
+            '[reknown-ext] unexpected exception in enrichOne',
+            JSON.stringify({
+              stage: stage,
+              requestId: requestId,
+              personId: person && person.id ? String(person.id) : null,
+              slug: personSlug || null,
+              exceptionName: err && err.name ? err.name : 'Error',
+              exceptionMessage: err && err.message ? err.message : String(err),
+              stack: errorStackPreview,
+            }),
+          );
+          emitInternalExceptionTelemetry(stage, {
             requestId: requestId,
             personId: person && person.id ? String(person.id) : null,
             slug: personSlug || null,
-            exceptionName: err && err.name ? err.name : 'Error',
-            exceptionMessage: err && err.message ? err.message : String(err),
-            stack: errorStackPreview,
-          }),
-        );
-        emitInternalExceptionTelemetry(stage, {
-          requestId: requestId,
-          personId: person && person.id ? String(person.id) : null,
-          slug: personSlug || null,
-        }, err);
-        result = { status: 'error', error: createInternalErrorResult(err) };
+          }, err);
+          result = { status: 'error', error: createInternalErrorResult(err) };
+        }
       }
       const resultErrorLog =
         result && typeof result.error === 'object' && result.error !== null
@@ -5523,8 +5589,17 @@ async function runBatch(requestId, people, tabId) {
         logStageBoundary(personStageContext, 'result.emitted', personStart);
         previousProgressMeta = resultProgressMeta;
         if (result.fatal) {
+          if (result.error === 'rate_limited') {
+            batch.cancelled = true;
+            for (const entry of batch.activeControllers.values()) {
+              try { entry.controller.abort(); } catch { /* ignore */ }
+            }
+            batch.activeControllers.clear();
+          }
           const cooldownMeta =
-            result.error === 'rate_limited' ? await setRateLimitCooldown() : getRateLimitCooldownMeta();
+            result.error === 'rate_limited'
+              ? await setRateLimitCooldown(Date.now(), result.rateLimitError)
+              : getRateLimitCooldownMeta();
           console.log(
             '[reknown-ext] runBatch fatal-abort requestId=' + requestId,
             'reason=' + resultErrorLog,
