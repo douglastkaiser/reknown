@@ -4,6 +4,8 @@ import { WEB_TEAM_PROVIDERS, validateWebTeamProviderUrl } from '../../lib/web-te
 import type { WebTeamProvider } from '../../lib/web-team';
 import { Button } from '../common/Button';
 import { EspnTeamSelector } from './EspnTeamSelector';
+import { HistoricalCollectionSelector } from './HistoricalCollectionSelector';
+import type { HistoricalCollection } from '../../lib/historical-collections';
 
 type CreateInput = {
   name: string;
@@ -15,6 +17,10 @@ type CreateInput = {
   espnSeason?: number;
   webTeamProvider?: string;
   webTeamUrl?: string;
+  historicalCollectionId?: string;
+  historicalCollectionName?: string;
+  historicalCollectionTags?: string[];
+  historicalSource?: 'wikidata';
 };
 
 export function NewCategoryDialog({
@@ -36,6 +42,7 @@ export function NewCategoryDialog({
   const [webTeamProvider, setWebTeamProvider] = useState<WebTeamProvider>('vast');
   const [webTeamUrl, setWebTeamUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [historicalCollection, setHistoricalCollection] = useState<HistoricalCollection | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -46,6 +53,7 @@ export function NewCategoryDialog({
       setWebTeamProvider('vast');
       setWebTeamUrl('');
       setSubmitting(false);
+      setHistoricalCollection(null);
     }
   }, [open]);
 
@@ -72,6 +80,7 @@ export function NewCategoryDialog({
 
   const isEspn = method === 'espn_roster';
   const isWebTeamPage = method === 'web_team_page';
+  const isHistorical = method === 'historical_figures';
   const normalizedWebTeamUrl = webTeamUrl.trim();
   const webTeamUrlError = (() => {
     if (!isWebTeamPage) return '';
@@ -81,7 +90,9 @@ export function NewCategoryDialog({
     }
     return '';
   })();
-  const canSubmit = isEspn
+  const canSubmit = isHistorical
+    ? !!name.trim() && !!historicalCollection && !submitting
+    : isEspn
     ? !!name.trim() && !!espnSelection && !submitting
     : isWebTeamPage
       ? !!name.trim() && !webTeamUrlError && !submitting
@@ -103,6 +114,12 @@ export function NewCategoryDialog({
       if (isWebTeamPage) {
         input.webTeamProvider = webTeamProvider;
         input.webTeamUrl = normalizedWebTeamUrl;
+      }
+      if (isHistorical && historicalCollection) {
+        input.historicalCollectionId = historicalCollection.id;
+        input.historicalCollectionName = historicalCollection.name;
+        input.historicalCollectionTags = historicalCollection.tags;
+        input.historicalSource = 'wikidata';
       }
       await onCreate(input);
     } finally {
@@ -139,6 +156,21 @@ export function NewCategoryDialog({
               <span className="font-medium text-text">LinkedIn</span>
               <span className="block text-xs text-muted">
                 Import a LinkedIn CSV export and enrich photos via the reknown browser extension.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-white/5 p-3 text-sm">
+            <input
+              type="radio"
+              name="enrichMethod"
+              checked={isHistorical}
+              onChange={() => setMethod('historical_figures')}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="font-medium text-text">Historical Figures</span>
+              <span className="block text-xs text-muted">
+                Choose a curated collection hydrated from Wikidata and Wikimedia Commons.
               </span>
             </span>
           </label>
@@ -193,6 +225,17 @@ export function NewCategoryDialog({
               <EspnTeamSelector onSelect={handleEspnSelect} />
             </div>
           ) : null}
+          {isHistorical ? (
+            <div className="pl-6">
+              <HistoricalCollectionSelector
+                selectedId={historicalCollection?.id}
+                onSelect={(collection) => {
+                  setHistoricalCollection(collection);
+                  if (!nameManuallyEdited) setName(collection.name);
+                }}
+              />
+            </div>
+          ) : null}
           {isWebTeamPage ? (
             <div className="space-y-2 pl-6">
               <div className="space-y-1">
@@ -240,7 +283,7 @@ export function NewCategoryDialog({
           <input
             autoFocus={!isEspn}
             className="w-full rounded-lg bg-white/5 px-3 py-2 text-sm"
-            placeholder={isEspn ? 'Auto-filled from team' : 'e.g. LinkedIn, Work'}
+            placeholder={isEspn || isHistorical ? 'Auto-filled from selection' : 'e.g. LinkedIn, Work'}
             value={name}
             onChange={(e) => {
               setName(e.target.value);
@@ -258,6 +301,8 @@ export function NewCategoryDialog({
               ? 'Creating…'
               : isEspn
                 ? 'Create & Import Roster'
+                : isHistorical
+                  ? 'Create & Import Collection'
                 : 'Create'}
           </Button>
         </div>
