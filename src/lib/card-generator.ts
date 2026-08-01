@@ -74,9 +74,17 @@ export function buildReviewQueue(params: {
   const { existing, generatedNew, queueCap, minQueueSize, now = Date.now() } = params;
   const due = existing.filter((card) => card.srs.dueAt <= now);
   const overdueSorted = [...due].sort((a, b) => a.srs.dueAt - b.srs.dueAt);
-  const queue = overdueSorted.length < minQueueSize
-    ? [...overdueSorted, ...generatedNew.slice(0, minQueueSize - overdueSorted.length)]
-    : overdueSorted;
+  const queue = [...overdueSorted];
+  const selectedIds = new Set(queue.map((card) => card.id));
+  const targetSize = Math.min(minQueueSize, queueCap);
+
+  for (const card of generatedNew) {
+    if (queue.length >= targetSize) break;
+    if (selectedIds.has(card.id)) continue;
+
+    queue.push(card);
+    selectedIds.add(card.id);
+  }
 
   return shuffle(queue).slice(0, queueCap);
 }
