@@ -6,6 +6,7 @@ import { ConfirmDialog } from '../common/ConfirmDialog';
 const METHOD_LABEL: Record<Category['enrichMethod'], string> = {
   linkedin: 'LinkedIn',
   espn_roster: 'ESPN',
+  historical_figures: 'Historical figures',
   civic_reps: 'Local Politicians',
   web_team_page: 'Web Team Page',
 };

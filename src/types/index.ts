@@ -3,6 +3,7 @@ export type CardType = 'name_to_face' | 'face_to_name';
 export type EnrichMethod =
   | 'linkedin'
   | 'espn_roster'
+  | 'historical_figures'
   | 'civic_reps'
   | 'web_team_page';
 
@@ -16,6 +17,10 @@ export interface Category {
   espnTeamId?: string;
   espnTeamName?: string;
   espnSeason?: number;
+  historicalCollectionId?: string;
+  historicalCollectionName?: string;
+  historicalCollectionTags?: string[];
+  historicalSource?: 'wikidata';
   civicAddressOrZip?: string;
   webTeamProvider?: string;
   webTeamUrl?: string;
@@ -62,6 +67,8 @@ export interface Person {
   };
   linkedinUrl?: string;
   espnPlayerId?: string;
+  /** Stable Wikidata identity (a QID), used for source refreshes. */
+  wikidataEntityId?: string;
   civicSourceId?: string;
   civicOffice?: string;
   civicDivisionId?: string;

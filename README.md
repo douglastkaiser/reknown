@@ -2,6 +2,23 @@
 
 A mobile-first spaced-repetition app for memorizing people from your network.
 
+## Historical figures (curated MVP)
+
+The first historical-figures release intentionally offers only a small,
+version-controlled catalog. Collection membership is editorially curated:
+labels such as “major” or “great” are subjective and are not generated from
+open-ended knowledge-graph queries. A person's Wikidata QID is the stable
+identity used for deduplication and refreshes.
+
+Names, short biographies, occupations, dates, and image references are
+hydrated from [Wikidata](https://www.wikidata.org/); images are served by
+[Wikimedia Commons](https://commons.wikimedia.org/). Wikidata structured data
+is generally available under CC0, while individual Commons files have their
+own licenses and attribution requirements. Deployments and downstream exports
+should retain the QID/source link and inspect each image's Commons file page to
+provide the creator, license, and any required attribution. Curated membership
+does not imply that the underlying media is public domain.
+
 ## Problem statement
 
 Remembering names, faces, and context after events, outreach, or hiring pipelines is hard when your contact list grows quickly. Reknown turns your people data into review cards so you can keep relationships warm and recall details on demand.

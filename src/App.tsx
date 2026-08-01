@@ -6,6 +6,7 @@ import { PeopleForm } from './components/people/PeopleForm';
 import { PeopleList } from './components/people/PeopleList';
 import { EnrichPhotosPanel } from './components/people/EnrichPhotosPanel';
 import { EspnRosterPanel } from './components/people/EspnRosterPanel';
+import { HistoricalFiguresPanel } from './components/people/HistoricalFiguresPanel';
 import { CivicRepresentativesPanel } from './components/people/CivicRepresentativesPanel';
 import { WebTeamPagePanel } from './components/people/WebTeamPagePanel';
 import { CategoryTabs } from './components/people/CategoryTabs';
@@ -27,6 +28,9 @@ import { fetchRoster, rosterToPersonRecords, SPORTS } from './lib/espn';
 import { getSettings, seedPeople } from './lib/storage';
 import { collectCompanyOptions, personHasCompany } from './lib/companies';
 import { collectRegionOptions, personHasRegion } from './lib/regions';
+import { getHistoricalCollection } from './lib/historical-collections';
+import { importHistoricalFigures } from './lib/historical-import';
+import { wikidataHistoricalFigureProvider } from './lib/wikidata';
 import type { Category, CsvPersonRow, Person, Settings } from './types';
 
 function useAppSettings() {
@@ -177,6 +181,7 @@ function PeoplePage({
   );
 
   const [espnImporting, setEspnImporting] = useState(false);
+  const [historicalImportErrors, setHistoricalImportErrors] = useState<Record<string, string>>({});
 
   async function handleCreate(input: Omit<Category, 'id' | 'createdAt' | 'updatedAt'>) {
     const created = await addCategory(input);
@@ -206,6 +211,34 @@ function PeoplePage({
           console.error('[espn] auto-import failed', err);
         } finally {
           setEspnImporting(false);
+        }
+      }
+    }
+
+    if (input.enrichMethod === 'historical_figures' && input.historicalCollectionId) {
+      const collection = getHistoricalCollection(input.historicalCollectionId);
+      if (collection) {
+        try {
+          const result = await importHistoricalFigures(
+            created.id,
+            collection.wikidataEntityIds,
+            [],
+            wikidataHistoricalFigureProvider,
+          );
+          if (result.failures.length) {
+            const failed = result.failures.reduce((sum, failure) => sum + failure.entityIds.length, 0);
+            setHistoricalImportErrors((current) => ({
+              ...current,
+              [created.id]: `${failed} figure${failed === 1 ? '' : 's'} could not be imported. Retry from the collection panel.`,
+            }));
+          }
+          await peopleState.refresh();
+        } catch (err) {
+          console.error('[historical] auto-import failed', err);
+          setHistoricalImportErrors((current) => ({
+            ...current,
+            [created.id]: err instanceof Error ? err.message : 'Historical import failed. Retry from the collection panel.',
+          }));
         }
       }
     }
@@ -301,6 +334,20 @@ function PeoplePage({
               category={activeCategory}
               people={peopleInCategory}
               onImported={peopleState.refresh}
+            />
+          ) : activeCategory.enrichMethod === 'historical_figures' ? (
+            <HistoricalFiguresPanel
+              category={activeCategory}
+              people={peopleInCategory}
+              initialError={historicalImportErrors[activeCategory.id]}
+              onImported={async () => {
+                setHistoricalImportErrors((current) => {
+                  const next = { ...current };
+                  delete next[activeCategory.id];
+                  return next;
+                });
+                await peopleState.refresh();
+              }}
             />
           ) : activeCategory.enrichMethod === 'web_team_page' ? (
             <WebTeamPagePanel
