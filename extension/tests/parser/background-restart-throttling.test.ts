@@ -86,7 +86,7 @@ describe('background throttle protection across restarts', () => {
 
     const harness = loadBackground({ [cooldownKey]: now + 99_999_999_999, [requestKey]: now + 99_999_999_999 }, now);
     await harness.api.ensureThrottleConfigReady();
-    expect(harness.api.getRateLimitCooldownMeta(now).cooldownRemainingMs).toBe(2 * 60 * 60 * 1000);
+    expect(harness.api.getRateLimitCooldownMeta(now).cooldownRemainingMs).toBe(7 * 24 * 60 * 60 * 1000);
     await harness.api.waitForLinkedInRequestSlot('https://www.linkedin.com/in/test', { cancelled: false });
     expect(harness.sleptMs).toBe(60_000);
   });

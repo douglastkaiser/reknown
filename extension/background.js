@@ -9,6 +9,11 @@ const THROTTLE_STORAGE_KEY = 'reknownEnrichThrottleProfile';
 const DEBUG_CONFIG_STORAGE_KEY = 'reknownEnrichDebugConfig';
 const RATE_LIMIT_COOLDOWN_STORAGE_KEY = 'reknownRateLimitCooldownUntil';
 const LAST_LINKEDIN_REQUEST_STORAGE_KEY = 'reknownLastLinkedInRequestAt';
+const THROTTLE_STRIKE_STORAGE_KEY = 'reknownThrottleStrike';
+const THROTTLE_STRIKE_WINDOW_MS = 30 * 60 * 1000;
+const THROTTLE_STRIKE_QUIET_RESET_MS = 6 * 60 * 60 * 1000;
+const MAX_THROTTLE_STRIKES = 4;
+const MAX_RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const THROTTLE_PROFILES = {
   normal: {
     perRequestMinMs: 30000,
@@ -137,6 +142,7 @@ let rateLimitCooldownUntil = 0;
 let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
 let throttleConfigReadyPromise = null;
 let lastLinkedInRequestAt = 0;
+let throttleStrike = { lastThrottleAt: 0, consecutiveStrikes: 0 };
 
 function persistProtectionTimestamp(storageKey, value, label) {
   return new Promise((resolve) => {
@@ -167,7 +173,7 @@ function loadStoredProtectionState() {
   return new Promise((resolve) => {
     try {
       browserApi.storage.local.get(
-        [RATE_LIMIT_COOLDOWN_STORAGE_KEY, LAST_LINKEDIN_REQUEST_STORAGE_KEY],
+        [RATE_LIMIT_COOLDOWN_STORAGE_KEY, LAST_LINKEDIN_REQUEST_STORAGE_KEY, THROTTLE_STRIKE_STORAGE_KEY],
         (items) => {
           const lastErr = browserApi.runtime.lastError;
           if (lastErr) {
@@ -180,10 +186,10 @@ function loadStoredProtectionState() {
           const storedCooldown = items && items[RATE_LIMIT_COOLDOWN_STORAGE_KEY];
           if (Number.isFinite(storedCooldown) && storedCooldown > now) {
             // A corrupt/far-future value must not lock the extension forever;
-            // cap it to one complete cooldown, which remains conservative.
+            // retain legitimate long server cooldowns, but cap them at one week.
             rateLimitCooldownUntil = Math.max(
               rateLimitCooldownUntil,
-              Math.min(storedCooldown, now + cfg.rateLimitCooldownMs),
+              Math.min(storedCooldown, now + MAX_RETRY_AFTER_MS),
             );
           } else if (storedCooldown != null && storedCooldown !== 0) {
             clearProtectionTimestamp(RATE_LIMIT_COOLDOWN_STORAGE_KEY, 'rate-limit cooldown');
@@ -203,6 +209,23 @@ function loadStoredProtectionState() {
             lastLinkedInRequestAt = Math.max(lastLinkedInRequestAt, storedLastRequest);
           } else if (storedLastRequest != null && storedLastRequest !== 0) {
             clearProtectionTimestamp(LAST_LINKEDIN_REQUEST_STORAGE_KEY, 'last LinkedIn request');
+          }
+
+          const storedStrike = items && items[THROTTLE_STRIKE_STORAGE_KEY];
+          if (
+            storedStrike && typeof storedStrike === 'object' &&
+            Number.isFinite(storedStrike.lastThrottleAt) && storedStrike.lastThrottleAt > 0 &&
+            Number.isInteger(storedStrike.consecutiveStrikes) && storedStrike.consecutiveStrikes > 0 &&
+            storedStrike.lastThrottleAt <= now &&
+            now - storedStrike.lastThrottleAt < THROTTLE_STRIKE_QUIET_RESET_MS
+          ) {
+            throttleStrike = {
+              lastThrottleAt: storedStrike.lastThrottleAt,
+              consecutiveStrikes: Math.min(MAX_THROTTLE_STRIKES, storedStrike.consecutiveStrikes),
+            };
+          } else if (storedStrike != null) {
+            throttleStrike = { lastThrottleAt: 0, consecutiveStrikes: 0 };
+            persistProtectionTimestamp(THROTTLE_STRIKE_STORAGE_KEY, throttleStrike, 'throttle strike');
           }
           resolve(true);
         },
@@ -605,13 +628,29 @@ function isRateLimitedError(err) {
   return !!(err && typeof err === 'object' && err.code === 'rate_limited');
 }
 
-function parseRetryAfter(value, nowMs) {
+function parseRetryAfterDeadline(value, nowMs) {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) return null;
-  if (/^\d+(?:\.\d+)?$/.test(raw)) return Math.max(0, Math.ceil(Number(raw)));
-  const retryAt = Date.parse(raw);
-  if (!Number.isFinite(retryAt)) return null;
-  return Math.max(0, Math.ceil((retryAt - (typeof nowMs === 'number' ? nowMs : Date.now())) / 1000));
+  if (/^[+-]\d/.test(raw)) return null;
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  let deadline;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) {
+    const seconds = Number(raw);
+    if (!Number.isFinite(seconds)) return null;
+    deadline = now + seconds * 1000;
+  } else {
+    deadline = Date.parse(raw);
+    if (!Number.isFinite(deadline)) return null;
+  }
+  // A stale date means "retry now". An excessively large value is treated
+  // conservatively, but cannot lock enrichment indefinitely.
+  return Math.min(now + MAX_RETRY_AFTER_MS, Math.max(now, Math.ceil(deadline)));
+}
+
+function parseRetryAfter(value, nowMs) {
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  const deadline = parseRetryAfterDeadline(value, now);
+  return deadline == null ? null : Math.ceil((deadline - now) / 1000);
 }
 
 function isLinkedInHost(url) {
@@ -621,9 +660,12 @@ function isLinkedInHost(url) {
 
 async function classifyLinkedInResponse(response, requestUrl) {
   if (!response || (!isLinkedInHost(requestUrl) && !isLinkedInHost(response.url || ''))) return;
-  const retryAfterSeconds = parseRetryAfter(response.headers && response.headers.get
+  const retryAfterDeadline = parseRetryAfterDeadline(response.headers && response.headers.get
     ? response.headers.get('retry-after')
-    : null);
+    : null, Date.now());
+  const retryAfterSeconds = retryAfterDeadline == null
+    ? null
+    : Math.ceil(Math.max(0, retryAfterDeadline - Date.now()) / 1000);
   let trigger = null;
   if (response.status === 429 || response.status === 999) trigger = 'http_' + response.status;
   else if (isLoginWall(response)) trigger = 'login_or_checkpoint_redirect';
@@ -644,7 +686,8 @@ async function classifyLinkedInResponse(response, requestUrl) {
       trigger: trigger,
       httpStatus: response.status,
       retryAfterSeconds: retryAfterSeconds,
-      retryAfterMs: retryAfterSeconds == null ? null : retryAfterSeconds * 1000,
+      retryAfterDeadline: retryAfterDeadline,
+      retryAfterMs: retryAfterDeadline == null ? null : Math.max(0, retryAfterDeadline - Date.now()),
       responseUrl: response.url || String(requestUrl || ''),
     });
   }
@@ -884,10 +927,25 @@ function getRateLimitCooldownMeta(nowMs) {
 async function setRateLimitCooldown(nowMs, rateLimitError) {
   const throttleCfg = getActiveThrottleConfig();
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
-  const retryAfterMs = rateLimitError && Number.isFinite(rateLimitError.retryAfterMs)
-    ? Math.max(0, rateLimitError.retryAfterMs)
-    : 0;
-  rateLimitCooldownUntil = now + Math.max(throttleCfg.rateLimitCooldownMs, retryAfterMs);
+  const withinStrikeWindow = throttleStrike.lastThrottleAt > 0 &&
+    now - throttleStrike.lastThrottleAt <= THROTTLE_STRIKE_WINDOW_MS;
+  const sufficientlyQuiet = !throttleStrike.lastThrottleAt ||
+    now - throttleStrike.lastThrottleAt >= THROTTLE_STRIKE_QUIET_RESET_MS;
+  const strikeCount = withinStrikeWindow
+    ? Math.min(MAX_THROTTLE_STRIKES, throttleStrike.consecutiveStrikes + 1)
+    : (sufficientlyQuiet ? 1 : Math.max(1, throttleStrike.consecutiveStrikes));
+  throttleStrike = { lastThrottleAt: now, consecutiveStrikes: strikeCount };
+
+  const safetyCooldownMs = Math.min(
+    MAX_RETRY_AFTER_MS,
+    throttleCfg.rateLimitCooldownMs * Math.pow(2, strikeCount - 1),
+  );
+  const providedDeadline = rateLimitError && Number.isFinite(rateLimitError.retryAfterDeadline)
+    ? Math.min(now + MAX_RETRY_AFTER_MS, Math.max(now, rateLimitError.retryAfterDeadline))
+    : now;
+  // Never replace a longer active cooldown with a shorter safety/server value.
+  rateLimitCooldownUntil = Math.max(rateLimitCooldownUntil, now + safetyCooldownMs, providedDeadline);
+  await persistProtectionTimestamp(THROTTLE_STRIKE_STORAGE_KEY, throttleStrike, 'throttle strike');
   await persistProtectionTimestamp(
     RATE_LIMIT_COOLDOWN_STORAGE_KEY,
     rateLimitCooldownUntil,
@@ -897,7 +955,7 @@ async function setRateLimitCooldown(nowMs, rateLimitError) {
   console.warn(
     '[reknown-ext] rate-limit cooldown enabled',
     'profile=' + throttleCfg.profile,
-    'durationMs=' + throttleCfg.rateLimitCooldownMs,
+    'durationMs=' + safetyCooldownMs,
     'cooldownUntil=' + new Date(rateLimitCooldownUntil).toISOString(),
     'remainingMs=' + meta.cooldownRemainingMs,
   );
@@ -907,6 +965,8 @@ async function setRateLimitCooldown(nowMs, rateLimitError) {
       : null,
     trigger: rateLimitError && rateLimitError.trigger ? rateLimitError.trigger : null,
     httpStatus: rateLimitError && Number.isFinite(rateLimitError.httpStatus) ? rateLimitError.httpStatus : null,
+    consecutiveThrottleStrikes: strikeCount,
+    safetyCooldownMs: safetyCooldownMs,
   });
 }
 
