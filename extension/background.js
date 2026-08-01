@@ -26,6 +26,10 @@ const REQUEST_BUDGET = Object.freeze({
   maxProfilesPerDay: 100,
 });
 const RISK_BACKOFF = Object.freeze({ baseMs: 30000, maxMs: 30 * 60 * 1000, maxLevel: 6, jitterRatio: 0.25 });
+// Start every batch as if the LinkedIn account is already receiving additional
+// scrutiny. A successful response can only lower this posture gradually; a new
+// batch never gets an optimistic, zero-risk first request.
+const INITIAL_BATCH_RISK_LEVEL = 2;
 const THROTTLE_PROFILES = {
   normal: {
     perRequestMinMs: 30000,
@@ -150,6 +154,10 @@ function logStageBoundary(stageContext, stage, startedAtMs) {
 
 // Track in-flight batches for cancellation. Keyed by requestId.
 const activeBatches = new Map(); // requestId -> { cancelled: boolean }
+// A budget write is asynchronous. Track accepted starts immediately so two
+// messages arriving in the same event-loop turn cannot both pass the active
+// batch check and create concurrent LinkedIn traffic.
+const pendingBatchStarts = new Set();
 let rateLimitCooldownUntil = 0;
 let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
 let throttleConfigReadyPromise = null;
@@ -662,7 +670,11 @@ async function sleepCancellable(ms, batch) {
 }
 
 function createBatchRiskState() {
-  return { level: 0, consecutiveExtractionFailures: 0, lastReason: null };
+  return {
+    level: INITIAL_BATCH_RISK_LEVEL,
+    consecutiveExtractionFailures: 0,
+    lastReason: 'assumed_account_watch',
+  };
 }
 
 function increaseBatchRisk(batch, reason) {
@@ -700,7 +712,12 @@ async function waitForLinkedInRequestSlot(url, batch) {
     throttle.perRequestMinMs + throttleRuntime.random() * throttle.perRequestJitterMs;
   const riskBackoffMs = getBatchBackoffMs(batch);
   const now = throttleRuntime.now();
-  const remainingMs = Math.max(0, lastLinkedInRequestAt + minimumGapMs + riskBackoffMs - now);
+  // With no prior timestamp, still apply the elevated-risk backoff. Treating
+  // an empty history as permission to issue an immediate first request would
+  // silently put every fresh install/restart back into a nominal posture.
+  const remainingMs = lastLinkedInRequestAt > 0
+    ? Math.max(0, lastLinkedInRequestAt + minimumGapMs + riskBackoffMs - now)
+    : riskBackoffMs;
   if (remainingMs > 0) await sleepCancellable(remainingMs, batch || { cancelled: false });
   if (batch && batch.cancelled) {
     throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_while_pacing', {
@@ -6044,7 +6061,6 @@ function handleRuntimeMessage(msg, sender, sendResponse) {
     }
     const people = Array.isArray(msg.people) ? msg.people : [];
     const requestId = String(msg.requestId || Date.now());
-    const force = msg.force === true;
     logStageBoundary(
       { requestId: requestId, personId: null, slug: null },
       'request.received',
@@ -6071,8 +6087,11 @@ function handleRuntimeMessage(msg, sender, sendResponse) {
       sendResponse({ ok: false, error: 'request_budget_reached', requestId, cooldown: budgetMeta });
       return;
     }
-    if (activeBatches.size > 0 && !force) {
-      const activeRequestIds = Array.from(activeBatches.keys());
+    if (activeBatches.size > 0 || pendingBatchStarts.size > 0) {
+      const activeRequestIds = Array.from(new Set([
+        ...activeBatches.keys(),
+        ...pendingBatchStarts.values(),
+      ]));
       console.warn(
         '[reknown-ext] REKNOWN_ENRICH_REQUEST rejected batch already running',
         'requestId=' + requestId,
@@ -6088,15 +6107,15 @@ function handleRuntimeMessage(msg, sender, sendResponse) {
       });
       return;
     }
-    if (activeBatches.size > 0 && force) {
-      console.warn(
-        '[reknown-ext] REKNOWN_ENRICH_REQUEST force accepted while batch active',
-        'requestId=' + requestId,
-        'tabId=' + tabId,
-        'activeRequestIds=' + Array.from(activeBatches.keys()).join(','),
-      );
-    }
-    reserveRequestBudget(people.length).then(() => runBatch(requestId, people, tabId)).catch((err) => {
+    pendingBatchStarts.add(requestId);
+    reserveRequestBudget(people.length).then((reservation) => {
+      if (!reservation.allowed) {
+        throw new Error('request_budget_reservation_failed');
+      }
+      pendingBatchStarts.delete(requestId);
+      return runBatch(requestId, people, tabId);
+    }).catch((err) => {
+      pendingBatchStarts.delete(requestId);
       const stage = 'runBatch.top_level';
       const errorStackPreview = trimErrorStack(err, 7);
       console.error(
