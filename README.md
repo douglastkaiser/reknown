@@ -49,8 +49,8 @@ Deterministic scoring and outcomes:
 - Manual grading (`manual_grade`): `accepted` when quality is `>= 3`, otherwise `rejected`.
 - Typed face-to-name (`typed_guess`):
   - exact match ⇒ quality `5`, `accepted`
-  - partial/close string overlap ⇒ quality `3`, `rejected`
-  - mismatch ⇒ quality `1`, `rejected`
+  - close or partial match ⇒ quality `4`, `accepted`
+  - mismatch or blank answer ⇒ quality `1`, `rejected`
 - Face multiple-choice (`multiple_choice`): correct option ⇒ quality `5`, `accepted`; wrong option ⇒ quality `1`, `rejected`.
 
 Dashboard metrics:
