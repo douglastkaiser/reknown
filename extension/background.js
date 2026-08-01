@@ -7,6 +7,8 @@ const browserApi = globalThis.browser || globalThis.chrome;
 const EXT_VERSION = browserApi.runtime.getManifest().version;
 const THROTTLE_STORAGE_KEY = 'reknownEnrichThrottleProfile';
 const DEBUG_CONFIG_STORAGE_KEY = 'reknownEnrichDebugConfig';
+const RATE_LIMIT_COOLDOWN_STORAGE_KEY = 'reknownRateLimitCooldownUntil';
+const LAST_LINKEDIN_REQUEST_STORAGE_KEY = 'reknownLastLinkedInRequestAt';
 const THROTTLE_PROFILES = {
   normal: {
     perRequestMinMs: 30000,
@@ -135,6 +137,82 @@ let rateLimitCooldownUntil = 0;
 let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
 let throttleConfigReadyPromise = null;
 let lastLinkedInRequestAt = 0;
+
+function persistProtectionTimestamp(storageKey, value, label) {
+  return new Promise((resolve) => {
+    try {
+      const payload = {};
+      payload[storageKey] = value;
+      browserApi.storage.local.set(payload, () => {
+        const lastErr = browserApi.runtime.lastError;
+        if (lastErr) {
+          console.warn('[reknown-ext] ' + label + ' storage set failed', lastErr.message);
+          resolve(false);
+          return;
+        }
+        resolve(true);
+      });
+    } catch (err) {
+      console.warn('[reknown-ext] ' + label + ' storage set threw', String(err));
+      resolve(false);
+    }
+  });
+}
+
+function clearProtectionTimestamp(storageKey, label) {
+  return persistProtectionTimestamp(storageKey, 0, label);
+}
+
+function loadStoredProtectionState() {
+  return new Promise((resolve) => {
+    try {
+      browserApi.storage.local.get(
+        [RATE_LIMIT_COOLDOWN_STORAGE_KEY, LAST_LINKEDIN_REQUEST_STORAGE_KEY],
+        (items) => {
+          const lastErr = browserApi.runtime.lastError;
+          if (lastErr) {
+            console.warn('[reknown-ext] protection state storage get failed', lastErr.message);
+            resolve(false);
+            return;
+          }
+          const now = Date.now();
+          const cfg = getActiveThrottleConfig();
+          const storedCooldown = items && items[RATE_LIMIT_COOLDOWN_STORAGE_KEY];
+          if (Number.isFinite(storedCooldown) && storedCooldown > now) {
+            // A corrupt/far-future value must not lock the extension forever;
+            // cap it to one complete cooldown, which remains conservative.
+            rateLimitCooldownUntil = Math.max(
+              rateLimitCooldownUntil,
+              Math.min(storedCooldown, now + cfg.rateLimitCooldownMs),
+            );
+          } else if (storedCooldown != null && storedCooldown !== 0) {
+            clearProtectionTimestamp(RATE_LIMIT_COOLDOWN_STORAGE_KEY, 'rate-limit cooldown');
+          }
+
+          const storedLastRequest = items && items[LAST_LINKEDIN_REQUEST_STORAGE_KEY];
+          const maxRequestGapMs = cfg.perRequestMinMs + cfg.perRequestJitterMs;
+          if (Number.isFinite(storedLastRequest) && storedLastRequest > now) {
+            // Treat a future request as having happened now, rather than
+            // allowing bad data to bypass spacing or cause an unbounded wait.
+            lastLinkedInRequestAt = Math.max(lastLinkedInRequestAt, now);
+          } else if (
+            Number.isFinite(storedLastRequest) &&
+            storedLastRequest > 0 &&
+            now - storedLastRequest <= maxRequestGapMs
+          ) {
+            lastLinkedInRequestAt = Math.max(lastLinkedInRequestAt, storedLastRequest);
+          } else if (storedLastRequest != null && storedLastRequest !== 0) {
+            clearProtectionTimestamp(LAST_LINKEDIN_REQUEST_STORAGE_KEY, 'last LinkedIn request');
+          }
+          resolve(true);
+        },
+      );
+    } catch (err) {
+      console.warn('[reknown-ext] protection state storage get threw', String(err));
+      resolve(false);
+    }
+  });
+}
 
 function normalizeDebugConfig(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -310,7 +388,9 @@ async function ensureThrottleConfigReady() {
   if (!throttleConfigReadyPromise) {
     throttleConfigReadyPromise = (async () => {
       const storedProfile = await loadStoredThrottleProfile();
-      return setThrottleProfile(storedProfile, { persist: false });
+      const info = await setThrottleProfile(storedProfile, { persist: false });
+      await loadStoredProtectionState();
+      return info;
     })();
   }
   return throttleConfigReadyPromise;
@@ -497,6 +577,11 @@ async function waitForLinkedInRequestSlot(url, batch) {
     });
   }
   lastLinkedInRequestAt = Date.now();
+  await persistProtectionTimestamp(
+    LAST_LINKEDIN_REQUEST_STORAGE_KEY,
+    lastLinkedInRequestAt,
+    'last LinkedIn request',
+  );
 }
 
 function createTypedFetchError(code, message, details) {
@@ -731,6 +816,12 @@ function sendToTab(tabId, message) {
 
 function getRateLimitCooldownMeta(nowMs) {
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  if (rateLimitCooldownUntil > 0 && rateLimitCooldownUntil <= now) {
+    rateLimitCooldownUntil = 0;
+    // Memory is reset first. A failed write cannot weaken the live process;
+    // on a later restart, an expired stored deadline is discarded again.
+    clearProtectionTimestamp(RATE_LIMIT_COOLDOWN_STORAGE_KEY, 'rate-limit cooldown');
+  }
   const remainingMs = Math.max(0, rateLimitCooldownUntil - now);
   return {
     cooldownUntil: rateLimitCooldownUntil || null,
@@ -739,10 +830,15 @@ function getRateLimitCooldownMeta(nowMs) {
   };
 }
 
-function setRateLimitCooldown(nowMs) {
+async function setRateLimitCooldown(nowMs) {
   const throttleCfg = getActiveThrottleConfig();
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
   rateLimitCooldownUntil = now + throttleCfg.rateLimitCooldownMs;
+  await persistProtectionTimestamp(
+    RATE_LIMIT_COOLDOWN_STORAGE_KEY,
+    rateLimitCooldownUntil,
+    'rate-limit cooldown',
+  );
   const meta = getRateLimitCooldownMeta(now);
   console.warn(
     '[reknown-ext] rate-limit cooldown enabled',
@@ -5428,7 +5524,7 @@ async function runBatch(requestId, people, tabId) {
         previousProgressMeta = resultProgressMeta;
         if (result.fatal) {
           const cooldownMeta =
-            result.error === 'rate_limited' ? setRateLimitCooldown() : getRateLimitCooldownMeta();
+            result.error === 'rate_limited' ? await setRateLimitCooldown() : getRateLimitCooldownMeta();
           console.log(
             '[reknown-ext] runBatch fatal-abort requestId=' + requestId,
             'reason=' + resultErrorLog,
@@ -5583,8 +5679,20 @@ async function runBatch(requestId, people, tabId) {
   }
 }
 
-browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+function handleRuntimeMessage(msg, sender, sendResponse) {
   if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'REKNOWN_ENRICH_REQUEST' && msg.__reknownStartupReady !== true) {
+    ensureThrottleConfigReady()
+      .then(() => {
+        const readyMessage = Object.assign({}, msg, { __reknownStartupReady: true });
+        handleRuntimeMessage(readyMessage, sender, sendResponse);
+      })
+      .catch((err) => {
+        console.warn('[reknown-ext] protection startup init failed', String(err));
+        sendResponse({ ok: false, error: 'protection_init_failed' });
+      });
+    return true;
+  }
   const tabId = sender && sender.tab && sender.tab.id;
   if (typeof msg.type === 'string' && msg.type.startsWith('REKNOWN_')) {
     console.log(
@@ -5770,4 +5878,6 @@ browserApi.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true, version: EXT_VERSION, profile: cfg.profile, config: cfg });
     return;
   }
-});
+}
+
+browserApi.runtime.onMessage.addListener(handleRuntimeMessage);
