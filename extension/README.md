@@ -143,13 +143,11 @@ The extension supports two profiles:
   - `perRequestJitterMs=15000` (60–75 seconds between requests)
   - `batchSize=3`
   - `batchPauseMs=300000`
-- `normal` — legacy/faster behavior:
-  - `perRequestMinMs=30000`
-  - `perRequestJitterMs=10000` (30–40 seconds between requests)
-  - `batchSize=5`
-  - `batchPauseMs=120000`
+- `normal` — legacy compatibility name; mandatory safety floors make it no
+  faster than 60–70 seconds, 3 people per batch, and a 5-minute batch rest.
+  New integrations should use `safe` rather than presenting `normal` to users.
 
-The delay is enforced centrally for profile HTML, overlay, and image requests—not only between people. The bounded jitter is load-spreading safety pacing, not simulated clicks, scrolling, navigation, or an attempt to evade LinkedIn controls.
+The delay is enforced centrally for profile HTML, overlay, and image requests—not only between people. Transient/protective responses and suspicious consecutive extraction failures add bounded exponential backoff, which recovers one level at a time after successful requests. The bounded jitter is load-spreading safety pacing, not simulated clicks, scrolling, navigation, or an attempt to evade LinkedIn controls. Enrichment is also capped at 40 profiles per six-hour session and 100 profiles per UTC day; those counters survive background restarts, and the app's cooldown display reports when another batch is eligible.
 
 ### Switch profile from the web app page (message-based)
 

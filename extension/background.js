@@ -10,10 +10,22 @@ const DEBUG_CONFIG_STORAGE_KEY = 'reknownEnrichDebugConfig';
 const RATE_LIMIT_COOLDOWN_STORAGE_KEY = 'reknownRateLimitCooldownUntil';
 const LAST_LINKEDIN_REQUEST_STORAGE_KEY = 'reknownLastLinkedInRequestAt';
 const THROTTLE_STRIKE_STORAGE_KEY = 'reknownThrottleStrike';
+const REQUEST_BUDGET_STORAGE_KEY = 'reknownEnrichmentRequestBudget';
 const THROTTLE_STRIKE_WINDOW_MS = 30 * 60 * 1000;
 const THROTTLE_STRIKE_QUIET_RESET_MS = 6 * 60 * 60 * 1000;
 const MAX_THROTTLE_STRIKES = 4;
 const MAX_RETRY_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+const SAFETY_FLOOR = Object.freeze({
+  perRequestMinMs: 60000,
+  batchSize: 3,
+  batchPauseMs: 5 * 60 * 1000,
+});
+const REQUEST_BUDGET = Object.freeze({
+  maxProfilesPerSession: 40,
+  sessionWindowMs: 6 * 60 * 60 * 1000,
+  maxProfilesPerDay: 100,
+});
+const RISK_BACKOFF = Object.freeze({ baseMs: 30000, maxMs: 30 * 60 * 1000, maxLevel: 6, jitterRatio: 0.25 });
 const THROTTLE_PROFILES = {
   normal: {
     perRequestMinMs: 30000,
@@ -143,6 +155,71 @@ let activeThrottleProfile = DEFAULT_THROTTLE_PROFILE;
 let throttleConfigReadyPromise = null;
 let lastLinkedInRequestAt = 0;
 let throttleStrike = { lastThrottleAt: 0, consecutiveStrikes: 0 };
+let requestBudgetState = { sessionStartedAt: 0, sessionCount: 0, dayStartedAt: 0, dayCount: 0 };
+let throttleRuntime = {
+  now: () => Date.now(),
+  random: () => Math.random(),
+};
+
+// Kept deliberately small so deterministic VM tests can replace time and
+// entropy without globally monkey-patching Date or Math.
+function setThrottleRuntimeDependencies(dependencies) {
+  const deps = dependencies && typeof dependencies === 'object' ? dependencies : {};
+  throttleRuntime = {
+    now: typeof deps.now === 'function' ? deps.now : (() => Date.now()),
+    random: typeof deps.random === 'function' ? deps.random : (() => Math.random()),
+  };
+}
+
+function utcDayStart(now) {
+  const date = new Date(now);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function normalizeRequestBudget(raw, now) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const dayStartedAt = utcDayStart(now);
+  const storedDay = source.dayStartedAt === dayStartedAt ? source.dayCount : 0;
+  const sessionValid = Number.isFinite(source.sessionStartedAt) && source.sessionStartedAt <= now &&
+    now - source.sessionStartedAt < REQUEST_BUDGET.sessionWindowMs;
+  return {
+    sessionStartedAt: sessionValid ? source.sessionStartedAt : now,
+    sessionCount: sessionValid && Number.isFinite(source.sessionCount) ? Math.max(0, source.sessionCount) : 0,
+    dayStartedAt,
+    dayCount: Number.isFinite(storedDay) ? Math.max(0, storedDay) : 0,
+  };
+}
+
+function getRequestBudgetMeta(profileCount, nowMs) {
+  const now = Number.isFinite(nowMs) ? nowMs : throttleRuntime.now();
+  requestBudgetState = normalizeRequestBudget(requestBudgetState, now);
+  const requested = Math.max(0, Number(profileCount) || 0);
+  const sessionExceeded = requestBudgetState.sessionCount + requested > REQUEST_BUDGET.maxProfilesPerSession;
+  const dailyExceeded = requestBudgetState.dayCount + requested > REQUEST_BUDGET.maxProfilesPerDay;
+  const nextEligibleAt = dailyExceeded
+    ? requestBudgetState.dayStartedAt + 24 * 60 * 60 * 1000
+    : (sessionExceeded ? requestBudgetState.sessionStartedAt + REQUEST_BUDGET.sessionWindowMs : null);
+  return {
+    allowed: !sessionExceeded && !dailyExceeded,
+    requestedProfiles: requested,
+    sessionCount: requestBudgetState.sessionCount,
+    sessionLimit: REQUEST_BUDGET.maxProfilesPerSession,
+    dailyCount: requestBudgetState.dayCount,
+    dailyLimit: REQUEST_BUDGET.maxProfilesPerDay,
+    cooldownUntil: nextEligibleAt,
+    cooldownRemainingMs: nextEligibleAt ? Math.max(0, nextEligibleAt - now) : 0,
+    cooldownRemainingSeconds: nextEligibleAt ? Math.ceil(Math.max(0, nextEligibleAt - now) / 1000) : 0,
+  };
+}
+
+async function reserveRequestBudget(profileCount, nowMs) {
+  const meta = getRequestBudgetMeta(profileCount, nowMs);
+  if (!meta.allowed) return meta;
+  requestBudgetState.sessionCount += meta.requestedProfiles;
+  requestBudgetState.dayCount += meta.requestedProfiles;
+  await persistProtectionTimestamp(REQUEST_BUDGET_STORAGE_KEY, requestBudgetState, 'request budget');
+  return getRequestBudgetMeta(0, nowMs);
+}
 
 function persistProtectionTimestamp(storageKey, value, label) {
   return new Promise((resolve) => {
@@ -173,7 +250,7 @@ function loadStoredProtectionState() {
   return new Promise((resolve) => {
     try {
       browserApi.storage.local.get(
-        [RATE_LIMIT_COOLDOWN_STORAGE_KEY, LAST_LINKEDIN_REQUEST_STORAGE_KEY, THROTTLE_STRIKE_STORAGE_KEY],
+        [RATE_LIMIT_COOLDOWN_STORAGE_KEY, LAST_LINKEDIN_REQUEST_STORAGE_KEY, THROTTLE_STRIKE_STORAGE_KEY, REQUEST_BUDGET_STORAGE_KEY],
         (items) => {
           const lastErr = browserApi.runtime.lastError;
           if (lastErr) {
@@ -181,7 +258,8 @@ function loadStoredProtectionState() {
             resolve(false);
             return;
           }
-          const now = Date.now();
+          const now = throttleRuntime.now();
+          requestBudgetState = normalizeRequestBudget(items && items[REQUEST_BUDGET_STORAGE_KEY], now);
           const cfg = getActiveThrottleConfig();
           const storedCooldown = items && items[RATE_LIMIT_COOLDOWN_STORAGE_KEY];
           if (Number.isFinite(storedCooldown) && storedCooldown > now) {
@@ -334,14 +412,15 @@ function getThrottleProfileConfig(profileName) {
     ? requested
     : DEFAULT_THROTTLE_PROFILE;
   const base = THROTTLE_PROFILES[resolvedProfile];
+  const effectiveMinMs = Math.max(SAFETY_FLOOR.perRequestMinMs, base.perRequestMinMs);
   return {
     requestedProfile: requested || null,
     profile: resolvedProfile,
-    perRequestMinMs: base.perRequestMinMs,
+    perRequestMinMs: effectiveMinMs,
     perRequestJitterMs: base.perRequestJitterMs,
-    perRequestMaxMs: base.perRequestMinMs + base.perRequestJitterMs,
-    batchSize: base.batchSize,
-    batchPauseMs: base.batchPauseMs,
+    perRequestMaxMs: effectiveMinMs + base.perRequestJitterMs,
+    batchSize: Math.min(SAFETY_FLOOR.batchSize, base.batchSize),
+    batchPauseMs: Math.max(SAFETY_FLOOR.batchPauseMs, base.batchPauseMs),
     rateLimitCooldownMs: base.rateLimitCooldownMs,
   };
 }
@@ -582,6 +661,33 @@ async function sleepCancellable(ms, batch) {
   }
 }
 
+function createBatchRiskState() {
+  return { level: 0, consecutiveExtractionFailures: 0, lastReason: null };
+}
+
+function increaseBatchRisk(batch, reason) {
+  if (!batch) return 0;
+  if (!batch.riskState) batch.riskState = createBatchRiskState();
+  batch.riskState.level = Math.min(RISK_BACKOFF.maxLevel, batch.riskState.level + 1);
+  batch.riskState.lastReason = reason || 'unknown';
+  return batch.riskState.level;
+}
+
+function recoverBatchRisk(batch) {
+  if (!batch || !batch.riskState) return 0;
+  // Recovery is intentionally gradual: one good request removes one level.
+  batch.riskState.level = Math.max(0, batch.riskState.level - 1);
+  return batch.riskState.level;
+}
+
+function getBatchBackoffMs(batch, randomValue) {
+  const level = batch && batch.riskState ? batch.riskState.level : 0;
+  if (!level) return 0;
+  const raw = Math.min(RISK_BACKOFF.maxMs, RISK_BACKOFF.baseMs * Math.pow(2, level - 1));
+  const random = Math.max(0, Math.min(1, Number.isFinite(randomValue) ? randomValue : throttleRuntime.random()));
+  return Math.round(raw * (1 - RISK_BACKOFF.jitterRatio + random * RISK_BACKOFF.jitterRatio * 2));
+}
+
 async function waitForLinkedInRequestSlot(url, batch) {
   const hostname = getUrlDiagnostics(url).hostname || '';
   if (!/(^|\.)(linkedin|licdn)\.com$/i.test(hostname)) return;
@@ -591,15 +697,17 @@ async function waitForLinkedInRequestSlot(url, batch) {
   // repeatedly landing on the same boundary. It is pacing only: the extension
   // does not synthesize clicks, scrolling, navigation, or other human actions.
   const minimumGapMs =
-    throttle.perRequestMinMs + Math.random() * throttle.perRequestJitterMs;
-  const remainingMs = Math.max(0, lastLinkedInRequestAt + minimumGapMs - Date.now());
+    throttle.perRequestMinMs + throttleRuntime.random() * throttle.perRequestJitterMs;
+  const riskBackoffMs = getBatchBackoffMs(batch);
+  const now = throttleRuntime.now();
+  const remainingMs = Math.max(0, lastLinkedInRequestAt + minimumGapMs + riskBackoffMs - now);
   if (remainingMs > 0) await sleepCancellable(remainingMs, batch || { cancelled: false });
   if (batch && batch.cancelled) {
     throw createTypedFetchError('fetch_cancelled', 'batch_cancelled_while_pacing', {
       isBatchCancelled: true,
     });
   }
-  lastLinkedInRequestAt = Date.now();
+  lastLinkedInRequestAt = throttleRuntime.now();
   await persistProtectionTimestamp(
     LAST_LINKEDIN_REQUEST_STORAGE_KEY,
     lastLinkedInRequestAt,
@@ -669,6 +777,7 @@ async function classifyLinkedInResponse(response, requestUrl) {
   let trigger = null;
   if (response.status === 429 || response.status === 999) trigger = 'http_' + response.status;
   else if (isLoginWall(response)) trigger = 'login_or_checkpoint_redirect';
+  else if (response.status >= 400 && response.status < 500) trigger = 'unexpected_http_' + response.status;
 
   if (!trigger && response.clone && response.headers && response.headers.get) {
     const contentType = response.headers.get('content-type') || '';
@@ -844,7 +953,14 @@ async function fetchWithTimeout(url, options, controlOptions) {
       abortReason: abortReason,
       diagnosticContext: diagnosticContext,
     });
-    await classifyLinkedInResponse(response, url);
+    try {
+      await classifyLinkedInResponse(response, url);
+    } catch (classificationError) {
+      increaseBatchRisk(batch, classificationError.trigger || classificationError.code);
+      throw classificationError;
+    }
+    if (response.status >= 500) increaseBatchRisk(batch, 'transient_http_' + response.status);
+    else recoverBatchRisk(batch);
     return response;
   } catch (err) {
     if (isRateLimitedError(err)) throw err;
@@ -861,6 +977,7 @@ async function fetchWithTimeout(url, options, controlOptions) {
       diagnosticContext: diagnosticContext,
     });
     if (timeoutTriggered && abortErr) {
+      increaseBatchRisk(batch, 'fetch_timeout');
       throw createTypedFetchError('fetch_timeout', 'fetch timed out', {
         timeoutMs: timeoutMs,
         errorCode: 'timeout_abort',
@@ -874,6 +991,7 @@ async function fetchWithTimeout(url, options, controlOptions) {
         abortReason: abortReason,
       });
     }
+    increaseBatchRisk(batch, timeoutTriggered ? 'fetch_timeout' : 'transient_network_failure');
     throw createTypedFetchError('fetch_failed', 'network error during fetch', {
       errorCode: 'network_error',
       abortReason: abortReason,
@@ -5436,7 +5554,7 @@ async function runBatch(requestId, people, tabId) {
   await ensureDebugConfigReady();
   applyDebugContext({ requestId: requestId, slug: null });
   const throttleCfg = getActiveThrottleConfig();
-  const batch = { cancelled: false, activeControllers: new Map() };
+  const batch = { cancelled: false, activeControllers: new Map(), riskState: createBatchRiskState() };
   const batchStats = {
     lowConfidenceFallbackAcceptedCount: 0,
   };
@@ -5584,6 +5702,7 @@ async function runBatch(requestId, people, tabId) {
         fetchDurationsMs.push(result.fetchProfileDurationMs);
       }
       if (result.status === 'success') {
+        batch.riskState.consecutiveExtractionFailures = 0;
         success++;
         const successDataUrlLen =
           result && typeof result.photoDataUrl === 'string' ? result.photoDataUrl.length : 0;
@@ -5613,6 +5732,15 @@ async function runBatch(requestId, people, tabId) {
         logStageBoundary(personStageContext, 'result.emitted', personStart);
         previousProgressMeta = resultProgressMeta;
       } else {
+        const extractionMeta = getProgressErrorMeta(result ? result.error : null);
+        if (extractionMeta.errorCode === 'no_photo_found' || extractionMeta.errorCode === 'reject.owner_mismatch') {
+          batch.riskState.consecutiveExtractionFailures += 1;
+          if (batch.riskState.consecutiveExtractionFailures >= 2) {
+            increaseBatchRisk(batch, 'consecutive_extraction_failures');
+          }
+        } else {
+          batch.riskState.consecutiveExtractionFailures = 0;
+        }
         failed++;
         const progressErrorMeta = getProgressErrorMeta(result ? result.error : null);
         const progressErrorCode = progressErrorMeta.errorCode;
@@ -5938,6 +6066,11 @@ function handleRuntimeMessage(msg, sender, sendResponse) {
       });
       return;
     }
+    const budgetMeta = getRequestBudgetMeta(people.length);
+    if (!budgetMeta.allowed) {
+      sendResponse({ ok: false, error: 'request_budget_reached', requestId, cooldown: budgetMeta });
+      return;
+    }
     if (activeBatches.size > 0 && !force) {
       const activeRequestIds = Array.from(activeBatches.keys());
       console.warn(
@@ -5963,7 +6096,7 @@ function handleRuntimeMessage(msg, sender, sendResponse) {
         'activeRequestIds=' + Array.from(activeBatches.keys()).join(','),
       );
     }
-    runBatch(requestId, people, tabId).catch((err) => {
+    reserveRequestBudget(people.length).then(() => runBatch(requestId, people, tabId)).catch((err) => {
       const stage = 'runBatch.top_level';
       const errorStackPreview = trimErrorStack(err, 7);
       console.error(
