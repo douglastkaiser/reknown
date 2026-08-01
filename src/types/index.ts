@@ -194,7 +194,7 @@ export interface Settings {
   newCardsWhenQueueSmall: number;
   queueCap: number;
   maturityThreshold: number;
-  facerOptionCount: number;
+  faceOptionCount: number;
   cardTypeWeights: Record<CardType, number>;
   installPromptDismissedAt: number | null;
   updatedAt: number;

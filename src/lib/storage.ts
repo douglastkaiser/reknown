@@ -53,7 +53,7 @@ const DEFAULT_SETTINGS: Settings = {
   newCardsWhenQueueSmall: 8,
   queueCap: 30,
   maturityThreshold: 21,
-  facerOptionCount: 8,
+  faceOptionCount: 8,
   cardTypeWeights: {
     name_to_face: 4,
     face_to_name: 4,
@@ -332,20 +332,29 @@ function settingsKey(): string {
   return `app:${requireScope()}`;
 }
 
+type PersistedSettings = Partial<Settings> & { facerOptionCount?: number };
+
+/** Normalize defaults and migrate the misspelled option-count field. */
+export function normalizeSettings(existing: PersistedSettings, key: string): Settings {
+  const { facerOptionCount, ...current } = existing;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...current,
+    id: key,
+    faceOptionCount: current.faceOptionCount ?? facerOptionCount ?? DEFAULT_SETTINGS.faceOptionCount,
+    cardTypeWeights: {
+      ...DEFAULT_SETTINGS.cardTypeWeights,
+      ...current.cardTypeWeights,
+    },
+  };
+}
+
 export async function getSettings(): Promise<Settings> {
   const db = await dbPromise;
   const key = settingsKey();
   const existing = await db.get('settings', key);
   if (existing) {
-    const merged: Settings = {
-      ...DEFAULT_SETTINGS,
-      ...existing,
-      id: key,
-      cardTypeWeights: {
-        ...DEFAULT_SETTINGS.cardTypeWeights,
-        ...existing.cardTypeWeights,
-      },
-    };
+    const merged = normalizeSettings(existing as PersistedSettings, key);
 
     if (JSON.stringify(merged) !== JSON.stringify(existing)) {
       const now = Date.now();
