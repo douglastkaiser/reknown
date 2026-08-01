@@ -43,13 +43,15 @@ describe('batch risk backoff and request budgets', () => {
   it('grows exponentially, remains within jitter bounds, and recovers one level at a time', () => {
     const { api } = harness();
     const batch = { riskState: api.createBatchRiskState() };
-    api.increaseBatchRisk(batch, 'network');
-    expect(api.getBatchBackoffMs(batch, 0)).toBe(22_500);
-    expect(api.getBatchBackoffMs(batch, 1)).toBe(37_500);
-    api.increaseBatchRisk(batch, 'http_500');
+    expect(batch.riskState).toMatchObject({ level: 2, lastReason: 'assumed_account_watch' });
     expect(api.getBatchBackoffMs(batch, 0.5)).toBe(60_000);
-    expect(api.recoverBatchRisk(batch)).toBe(1);
-    expect(api.recoverBatchRisk(batch)).toBe(0);
+    api.increaseBatchRisk(batch, 'network');
+    expect(api.getBatchBackoffMs(batch, 0)).toBe(90_000);
+    expect(api.getBatchBackoffMs(batch, 1)).toBe(150_000);
+    api.increaseBatchRisk(batch, 'http_500');
+    expect(api.getBatchBackoffMs(batch, 0.5)).toBe(240_000);
+    expect(api.recoverBatchRisk(batch)).toBe(3);
+    expect(api.recoverBatchRisk(batch)).toBe(2);
   });
 
   it('applies non-overridable safety floors to the legacy normal profile', () => {

@@ -50,15 +50,20 @@ describe('LinkedIn request pacing', () => {
       getActiveThrottleConfig: () => { perRequestMinMs: number; perRequestJitterMs: number };
     };
 
-    const batch = { cancelled: false };
+    const batch = {
+      cancelled: false,
+      riskState: { level: 2, consecutiveExtractionFailures: 0, lastReason: 'assumed_account_watch' },
+    };
     await api.waitForLinkedInRequestSlot('https://www.linkedin.com/in/example/', batch);
     await api.waitForLinkedInRequestSlot('https://media.licdn.com/example.jpg', batch);
 
     expect(api.getActiveThrottleConfig().perRequestMinMs).toBe(60_000);
     expect(api.getActiveThrottleConfig().perRequestJitterMs).toBe(15_000);
-    // Math.random is fixed at 0.5, so the target gap is 67.5 seconds. Allow a
-    // little real clock time between calls because only the remainder sleeps.
-    expect(sleptMs).toBeGreaterThanOrEqual(66_500);
-    expect(sleptMs).toBeLessThanOrEqual(67_500);
+    // The assumed-watch posture adds a 60-second backoff before the first
+    // request. Math.random is fixed at 0.5, so the next gap is 67.5 seconds
+    // plus the same 60-second elevated-risk backoff.
+    // Allow a little real clock time because only the remainder sleeps.
+    expect(sleptMs).toBeGreaterThanOrEqual(186_500);
+    expect(sleptMs).toBeLessThanOrEqual(187_500);
   });
 });
