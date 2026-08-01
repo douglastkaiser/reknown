@@ -38,7 +38,7 @@ export function generateCardsForPeople(people: Person[], settings: Settings, cou
 }
 
 export function withFaceOptions(cards: ReviewCard[], people: Person[], settings: Settings): ReviewCard[] {
-  const optionCount = Math.max(settings.facerOptionCount, 8);
+  const optionCount = Math.max(settings.faceOptionCount, 8);
   if (optionCount < 2) return cards;
 
   return cards.map((card) => {
